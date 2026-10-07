@@ -9,6 +9,7 @@
 
 #include <cerrno>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -16,10 +17,16 @@
 #include <fcntl.h>
 #include <io.h>
 #include <sys/stat.h>
+#include <windows.h>
 static int NativeOpen(const std::filesystem::path& p, int nativeFlags, std::uint16_t mode) {
     return ::_wopen(p.wstring().c_str(), nativeFlags, static_cast<int>(mode));
 }
 static std::int64_t NativeLseek(int fd, std::int64_t offset, int whence) {
+    const auto handle = reinterpret_cast<HANDLE>(::_get_osfhandle(fd));
+    if (handle != INVALID_HANDLE_VALUE && ::GetFileType(handle) == FILE_TYPE_PIPE) {
+        errno = ESPIPE;
+        return -1;
+    }
     return ::_lseeki64(fd, offset, whence);
 }
 static int NativeRead(int fd, void* buf, std::size_t n) {
@@ -101,6 +108,86 @@ static int SceErrorFromErrno(int error) {
     return static_cast<int>(0x80020000u | static_cast<unsigned>(guest));
 }
 
+static std::optional<int> ScalarIoError(int error) {
+    if (error == EACCES) return SCE_KERNEL_ERROR_EACCES;
+    if (error == EAGAIN) return SCE_KERNEL_ERROR_EAGAIN;
+#ifdef EWOULDBLOCK
+    if (error == EWOULDBLOCK) return SCE_KERNEL_ERROR_EAGAIN;
+#endif
+    if (error == EBADF) return SCE_KERNEL_ERROR_EBADF;
+#ifdef EDEADLK
+    if (error == EDEADLK) return SCE_KERNEL_ERROR_EDEADLK;
+#endif
+#ifdef EDQUOT
+    if (error == EDQUOT) return SCE_KERNEL_ERROR_EDQUOT;
+#endif
+#ifdef EFBIG
+    if (error == EFBIG) return SCE_KERNEL_ERROR_EFBIG;
+#endif
+    if (error == EFAULT) return SCE_KERNEL_ERROR_EFAULT;
+#ifdef EINTR
+    if (error == EINTR) return SCE_KERNEL_ERROR_EINTR;
+#endif
+    if (error == EINVAL) return SCE_KERNEL_ERROR_EINVAL;
+    if (error == EIO) return SCE_KERNEL_ERROR_EIO;
+#ifdef EISDIR
+    if (error == EISDIR) return SCE_KERNEL_ERROR_EISDIR;
+#endif
+#ifdef EMFILE
+    if (error == EMFILE) return SCE_KERNEL_ERROR_EMFILE;
+#endif
+#ifdef ENFILE
+    if (error == ENFILE) return SCE_KERNEL_ERROR_ENFILE;
+#endif
+#ifdef ENODEV
+    if (error == ENODEV) return SCE_KERNEL_ERROR_ENODEV;
+#endif
+#ifdef ENOMEM
+    if (error == ENOMEM) return SCE_KERNEL_ERROR_ENOMEM;
+#endif
+#ifdef ENOSPC
+    if (error == ENOSPC) return SCE_KERNEL_ERROR_ENOSPC;
+#endif
+#ifdef ENOTDIR
+    if (error == ENOTDIR) return SCE_KERNEL_ERROR_ENOTDIR;
+#endif
+#ifdef ENOTTY
+    if (error == ENOTTY) return SCE_KERNEL_ERROR_ENOTTY;
+#endif
+#ifdef EOVERFLOW
+    if (error == EOVERFLOW) return SCE_KERNEL_ERROR_EOVERFLOW;
+#endif
+#ifdef EPIPE
+    if (error == EPIPE) return SCE_KERNEL_ERROR_EPIPE;
+#endif
+#ifdef EROFS
+    if (error == EROFS) return SCE_KERNEL_ERROR_EROFS;
+#endif
+#ifdef ESPIPE
+    if (error == ESPIPE) return SCE_KERNEL_ERROR_ESPIPE;
+#endif
+#ifdef ETXTBSY
+    if (error == ETXTBSY) return SCE_KERNEL_ERROR_ETXTBSY;
+#endif
+    return std::nullopt;
+}
+
+template <typename Operation>
+static std::int64_t ScalarIoResult(Operation operation, const char* function, const char* action, int descriptor) {
+    const int savedErrno = errno;
+    try {
+        const std::int64_t result = operation();
+        const int nativeError = errno;
+        errno = savedErrno;
+        if (result >= 0) return result;
+        if (const auto error = ScalarIoError(nativeError)) return *error;
+        throw std::runtime_error(std::string(function) + ": " + action + " failed, fd=" + std::to_string(descriptor) + ", errno=" + std::to_string(nativeError));
+    } catch (...) {
+        errno = savedErrno;
+        throw;
+    }
+}
+
 extern "C" {
 
 int APS5_VABI sceKernelOpen(const char* path, int flags, std::uint16_t mode) {
@@ -133,38 +220,29 @@ int APS5_VABI sceKernelClose(int d) {
 }
 
 std::int64_t APS5_VABI sceKernelRead(int d, void* buf, std::size_t nbytes) {
-    if (buf == nullptr) {
-        throw std::invalid_argument(std::string(__func__) + ": buf is null");
-    }
-    const GuestArena::HostWrite destination(buf, nbytes);
-    if (!destination.Open()) errno = EFAULT;
-    auto n = destination.Open() ? NativeRead(d, buf, nbytes) : -1;
-    if (n < 0) {
-        throw std::runtime_error(std::string(__func__) + ": read failed, fd=" + std::to_string(d) + ", errno=" + std::to_string(errno));
-    }
-    return static_cast<std::int64_t>(n);
+    if (buf == nullptr && nbytes != 0) return SCE_KERNEL_ERROR_EFAULT;
+    char emptyBuffer = 0;
+    void* buffer = buf == nullptr ? &emptyBuffer : buf;
+    return ScalarIoResult([&] {
+        const GuestArena::HostWrite destination(buffer, nbytes);
+        if (!destination.Open()) {
+            errno = EFAULT;
+            return std::int64_t{-1};
+        }
+        return static_cast<std::int64_t>(NativeRead(d, buffer, nbytes));
+    }, __func__, "read", d);
 }
 
 std::int64_t APS5_VABI sceKernelWrite(int d, const void* buf, std::size_t nbytes) {
-    if (buf == nullptr) {
-        throw std::invalid_argument(std::string(__func__) + ": buf is null");
-    }
-    auto n = NativeWrite(d, buf, nbytes);
-    if (n < 0) {
-        throw std::runtime_error(std::string(__func__) + ": write failed, fd=" + std::to_string(d) + ", errno=" + std::to_string(errno));
-    }
-    return static_cast<std::int64_t>(n);
+    if (buf == nullptr && nbytes != 0) return SCE_KERNEL_ERROR_EFAULT;
+    const char emptyBuffer = 0;
+    const void* buffer = buf == nullptr ? &emptyBuffer : buf;
+    return ScalarIoResult([&] { return NativeWrite(d, buffer, nbytes); }, __func__, "write", d);
 }
 
 std::int64_t APS5_VABI sceKernelLseek(int d, std::int64_t offset, int whence) {
-    if (whence < 0 || whence > 2) {
-        throw std::invalid_argument(std::string(__func__) + ": invalid whence=" + std::to_string(whence));
-    }
-    std::int64_t result = NativeLseek(d, offset, whence);
-    if (result < 0) {
-        throw std::runtime_error(std::string(__func__) + ": lseek failed, fd=" + std::to_string(d) + ", errno=" + std::to_string(errno));
-    }
-    return result;
+    if (whence < 0 || whence > 2) return SCE_KERNEL_ERROR_EINVAL;
+    return ScalarIoResult([&] { return NativeLseek(d, offset, whence); }, __func__, "lseek", d);
 }
 
 int APS5_VABI sceKernelStat(const char* path, FileStat* sb) {

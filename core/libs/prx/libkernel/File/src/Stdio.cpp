@@ -217,8 +217,9 @@ static int PosixFailure(int error) {
     return -1;
 }
 
-static int PosixResult(int result) {
-    return result < 0 ? PosixFailure(result & 0xffff) : result;
+template <typename TResult>
+static TResult PosixResult(TResult result) {
+    return result < 0 ? PosixFailure(static_cast<int>(result & 0xffff)) : result;
 }
 
 extern "C" int APS5_VABI pipe_nid_postfix(int* descriptors) {
@@ -309,7 +310,7 @@ int APS5_VABI sceKernelFtruncate(int d, int64_t length) {
 }
 
 int64_t APS5_VABI lseek_nid_postfix(int d, int64_t offset, int whence) {
-    return static_cast<int64_t>(sceKernelLseek(d, offset, whence));
+    return PosixResult(sceKernelLseek(d, offset, whence));
 }
 
 int APS5_VABI mkdir_nid_postfix(const char* path, uint16_t mode) {
@@ -376,22 +377,22 @@ int64_t APS5_VABI pwrite_nid_disambig1_nid_postfix(int d, const void* buf, size_
 }
 
 int64_t APS5_VABI read_nid_postfix(int d, void* buf, uint64_t nbytes) {
-    return sceKernelRead(d, buf, static_cast<size_t>(nbytes));
+    return PosixResult(sceKernelRead(d, buf, static_cast<size_t>(nbytes)));
 }
 
 std::int64_t APS5_VABI _read_nid_postfix(int descriptor, void* buffer, std::size_t count) {
-    return sceKernelRead(descriptor, buffer, count);
+    return PosixResult(sceKernelRead(descriptor, buffer, count));
 }
 
 int64_t APS5_VABI write_nid_postfix(int d, const char* str, int64_t size) {
     if (size < 0) {
         APS5_INVALID_ARG_EX;
     }
-    return sceKernelWrite(d, str, static_cast<size_t>(size));
+    return PosixResult(sceKernelWrite(d, str, static_cast<size_t>(size)));
 }
 
 std::int64_t APS5_VABI _write_nid_postfix(int descriptor, const void* buffer, std::size_t count) {
-    return sceKernelWrite(descriptor, buffer, count);
+    return PosixResult(sceKernelWrite(descriptor, buffer, count));
 }
 
 int APS5_VABI stat_nid_postfix(const char* path, FileStat* sb) {
