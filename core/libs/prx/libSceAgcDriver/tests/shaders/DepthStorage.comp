@@ -1,0 +1,42 @@
+#version 450
+#ifdef ANYPS5_FORMATLESS
+#extension GL_EXT_shader_image_load_formatted : require
+#endif
+layout(local_size_x = 1, local_size_y = 1) in;
+#ifdef ANYPS5_ARRAY
+#define ANYPS5_STORAGE_TYPE uimage2DArray
+#else
+#define ANYPS5_STORAGE_TYPE uimage2D
+#endif
+#ifdef ANYPS5_FORMATLESS
+layout(binding = 0) uniform ANYPS5_STORAGE_TYPE storageDepth;
+#else
+layout(binding = 0, r16ui) uniform ANYPS5_STORAGE_TYPE storageDepth;
+#endif
+layout(binding = 1) uniform texture2D sampledDepth;
+layout(binding = 2) uniform sampler depthSampler;
+#ifndef ANYPS5_TRANSITION
+layout(binding = 3, std430) buffer Results { uvec2 pixels[]; };
+layout(push_constant) uniform Mode { uint mode; };
+#endif
+void main() {
+    ivec2 at = ivec2(gl_GlobalInvocationID.xy);
+#ifdef ANYPS5_ARRAY
+    ivec3 storageAt = ivec3(at, 0);
+#else
+    ivec2 storageAt = at;
+#endif
+    uint index = gl_GlobalInvocationID.y * 4 + gl_GlobalInvocationID.x;
+#ifdef ANYPS5_TRANSITION
+    uint sampled = uint(round(texelFetch(sampler2D(sampledDepth, depthSampler), at, 0).r * 65535.0));
+    uint bits = (imageLoad(storageDepth, storageAt).r + sampled + (index + 1) * 0x111u) & 0xffffu;
+    imageStore(storageDepth, storageAt, uvec4(bits, 0, 0, 0));
+#else
+    if (mode == 0) {
+        uint bits = imageLoad(storageDepth, storageAt).r ^ (0x2141u + index * 0x111u);
+        imageStore(storageDepth, storageAt, uvec4(bits, 0, 0, 0));
+    } else {
+        pixels[index] = uvec2(imageLoad(storageDepth, storageAt).r, floatBitsToUint(texelFetch(sampler2D(sampledDepth, depthSampler), at, 0).r));
+    }
+#endif
+}
