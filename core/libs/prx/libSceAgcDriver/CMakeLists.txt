@@ -559,7 +559,62 @@ set_target_properties(agc_driver_mesh_tests PROPERTIES CXX_EXTENSIONS OFF)
 configure_windows_unwind(agc_driver_mesh_tests)
 
 file(GLOB agcExecutionTestSources CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tests/execution/*.cpp)
-set(agcExecutionTests)
+set(agcDepthStencilShaderSource ${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/DepthStencilStorage.comp)
+set(agcDepthStencilShaderSpv ${agcTestShaderGeneratedRoot}/DepthStencilStorage.spv)
+set(agcDepthStencilShaderHeader ${agcTestShaderGeneratedRoot}/DepthStencilStorage_spv.h)
+add_custom_command(
+        OUTPUT "${agcDepthStencilShaderHeader}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${agcTestShaderGeneratedRoot}"
+        COMMAND "$<TARGET_FILE:glslang-standalone>" -V --target-env vulkan1.1 -o "${agcDepthStencilShaderSpv}" "${agcDepthStencilShaderSource}"
+        COMMAND ${CMAKE_COMMAND} -DINPUT=${agcDepthStencilShaderSpv} -DOUTPUT=${agcDepthStencilShaderHeader}
+        -DSYMBOL=DEPTH_STENCIL_STORAGE_SPV -P "${CMAKE_CURRENT_SOURCE_DIR}/embed_spirv.cmake"
+        DEPENDS "${agcDepthStencilShaderSource}" glslang-standalone
+        VERBATIM
+)
+set(agcDepthStencilFormatlessSpv ${agcTestShaderGeneratedRoot}/DepthStencilStorageFormatless.spv)
+set(agcDepthStencilFormatlessHeader ${agcTestShaderGeneratedRoot}/DepthStencilStorageFormatless_spv.h)
+add_custom_command(
+        OUTPUT "${agcDepthStencilFormatlessHeader}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${agcTestShaderGeneratedRoot}"
+        COMMAND "$<TARGET_FILE:glslang-standalone>" -V --target-env vulkan1.1 -DANYPS5_FORMATLESS=1 -o "${agcDepthStencilFormatlessSpv}" "${agcDepthStencilShaderSource}"
+        COMMAND ${CMAKE_COMMAND} -DINPUT=${agcDepthStencilFormatlessSpv} -DOUTPUT=${agcDepthStencilFormatlessHeader}
+        -DSYMBOL=DEPTH_STENCIL_STORAGE_FORMATLESS_SPV -P "${CMAKE_CURRENT_SOURCE_DIR}/embed_spirv.cmake"
+        DEPENDS "${agcDepthStencilShaderSource}" glslang-standalone
+        VERBATIM
+)
+set(agcStencilAttachmentHeaders)
+foreach(stage IN ITEMS vert frag)
+    set(shaderSource ${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/StencilAttachment.${stage})
+    set(shaderSpv ${agcTestShaderGeneratedRoot}/StencilAttachment_${stage}.spv)
+    set(shaderHeader ${agcTestShaderGeneratedRoot}/StencilAttachment_${stage}_spv.h)
+    add_custom_command(
+            OUTPUT "${shaderHeader}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${agcTestShaderGeneratedRoot}"
+            COMMAND "$<TARGET_FILE:glslang-standalone>" -V --target-env vulkan1.1 -o "${shaderSpv}" "${shaderSource}"
+            COMMAND ${CMAKE_COMMAND} -DINPUT=${shaderSpv} -DOUTPUT=${shaderHeader}
+            -DSYMBOL=STENCIL_ATTACHMENT_${stage}_SPV -P "${CMAKE_CURRENT_SOURCE_DIR}/embed_spirv.cmake"
+            DEPENDS "${shaderSource}" glslang-standalone
+            VERBATIM
+    )
+    list(APPEND agcStencilAttachmentHeaders ${shaderHeader})
+endforeach()
+add_test_executable(agc_driver_depth_stencil_storage_tests EXCLUDE_FROM_ALL
+        tests/DepthStencilStorage.cpp
+        ${agcDepthStencilShaderHeader}
+        ${agcDepthStencilFormatlessHeader}
+        ${agcStencilAttachmentHeaders}
+)
+target_include_directories(agc_driver_depth_stencil_storage_tests PRIVATE
+        ${LIBS_INCLUDE_DIR}
+        ${agcTestShaderGeneratedRoot}
+        ${CMAKE_SOURCE_DIR}/core/shader/recompiler
+        ${CMAKE_SOURCE_DIR}/3rdparty/Vulkan-Headers/include
+)
+target_link_libraries(agc_driver_depth_stencil_storage_tests PRIVATE libSceAgcDriver SDL2-static libc)
+set_target_properties(agc_driver_depth_stencil_storage_tests PROPERTIES CXX_EXTENSIONS OFF)
+configure_windows_unwind(agc_driver_depth_stencil_storage_tests)
+
+set(agcExecutionTests agc_driver_depth_stencil_storage_tests)
 foreach(agcExecutionTestSource IN LISTS agcExecutionTestSources)
     get_filename_component(agcExecutionTestName ${agcExecutionTestSource} NAME_WE)
     string(REGEX REPLACE "([a-z0-9])([A-Z])" "\\1_\\2" agcExecutionTestName "${agcExecutionTestName}")
