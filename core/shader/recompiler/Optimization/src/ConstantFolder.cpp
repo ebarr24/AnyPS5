@@ -270,6 +270,9 @@ bool ConstantFolder::tryFoldValue(IrProgram& program, IrValue& value) const {
             auto& source = resolveArg(value, 0);
             auto& offset = resolveArg(value, 1);
             auto& count = resolveArg(value, 2);
+            if (source.Opcode() == IrOpcode::GetBuiltin && lowerPackedAncillary(program, builder, source)) {
+                return true;
+            }
             if (source.Opcode() == IrOpcode::ShiftLeftLogical32 && isImmediate(offset, IrType::U32) && isImmediate(count, IrType::U32)) {
                 auto& shift = resolveArg(source, 1);
                 if (isImmediate(shift, IrType::U32) && shift.ImmediateU32() < 32u && offset.ImmediateU32() <= shift.ImmediateU32() && count.ImmediateU32() <= shift.ImmediateU32() - offset.ImmediateU32()) {
