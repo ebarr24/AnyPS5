@@ -139,9 +139,14 @@ void StaticCopies() {
     std::vector<std::uint32_t> commands;
     for (std::size_t i = 0; i < 9u; ++i) commands.insert(commands.end(), {0xc0017600u, frozen[i].offset, frozen[i].value});
     commands.insert(commands.end(), {0xc0031500u, 1, 1, 1, 0x8041});
+    alignas(64) std::uint32_t completed = 0;
+    const auto completionAddress = reinterpret_cast<std::uintptr_t>(&completed);
+    commands.insert(commands.end(), {0xc0064900u, 0x514u, (1u << 29u) | (2u << 24u), static_cast<std::uint32_t>(completionAddress), static_cast<std::uint32_t>(completionAddress >> 32u), 1, 0, 0});
+    commands.insert(commands.end(), {0xc0053c00u, 0x13u, static_cast<std::uint32_t>(completionAddress), static_cast<std::uint32_t>(completionAddress >> 32u), 1, 0xffffffffu, 0x19u});
     Packet packet{commands.data(), static_cast<std::uint32_t>(commands.size()), 0, {}};
     sceAgcDriverSubmitAcb(0x20, &packet);
     AgcDriverWaitIdle_nid_postfix();
+    Require(completed == 1, "bound copy dispatch completion label was not published");
     for (std::size_t offset = 0; offset < BlockBytes; ++offset) {
         const auto expected = offset < 8u * 16u ? NarrowConstantStoreFixture::ExpectedLane[offset % 16u] : NarrowConstantStoreFixture::Fill;
         Require(guest.Data()[offset] == expected, "bound copy dispatch byte " + std::to_string(offset) + " is " + std::to_string(guest.Data()[offset]) + ", expected " + std::to_string(expected));
