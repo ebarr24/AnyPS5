@@ -748,6 +748,7 @@ endforeach()
 
 target_include_directories(agc_driver_prepared_exports_tests PRIVATE $<TARGET_PROPERTY:shader_recompiler_agc_driver,INTERFACE_INCLUDE_DIRECTORIES>)
 target_include_directories(agc_driver_loop_image_continue_validation_tests PRIVATE $<TARGET_PROPERTY:shader_recompiler_agc_driver,INTERFACE_INCLUDE_DIRECTORIES>)
+target_include_directories(agc_driver_loop_structured_image_exit_tests PRIVATE $<TARGET_PROPERTY:shader_recompiler_agc_driver,INTERFACE_INCLUDE_DIRECTORIES>)
 
 target_include_directories(agc_driver_prepared_publication_tests PRIVATE $<TARGET_PROPERTY:shader_recompiler_agc_driver,INTERFACE_INCLUDE_DIRECTORIES>)
 
@@ -825,6 +826,32 @@ if(BUILD_TESTING)
         set_tests_properties(agc_driver_loop_image_continue_validation_none PROPERTIES ENVIRONMENT_MODIFICATION
                 "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
     endif()
+    set_tests_properties(agc_driver_loop_structured_image_exit PROPERTIES TIMEOUT 30)
+    foreach(agcBodyMode IN ITEMS default none)
+        if(agcBodyMode STREQUAL "default")
+            set(agcBodySuffix "")
+            set(agcBodyEnvironment "--unset=APS5_SPIRV_OPT")
+        else()
+            set(agcBodySuffix "_none")
+            set(agcBodyEnvironment "APS5_SPIRV_OPT=none")
+            add_test(NAME agc_driver_loop_structured_image_exit_none COMMAND ${CMAKE_COMMAND} -E env
+                    ${agcBodyEnvironment} "$<TARGET_FILE:agc_driver_loop_structured_image_exit_tests>")
+            set_tests_properties(agc_driver_loop_structured_image_exit_none PROPERTIES
+                    ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1" SKIP_RETURN_CODE 77 TIMEOUT 30)
+            if(WIN32)
+                set_tests_properties(agc_driver_loop_structured_image_exit_none PROPERTIES ENVIRONMENT_MODIFICATION
+                        "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+            endif()
+        endif()
+        add_test(NAME agc_driver_loop_structured_image_exit_validation${agcBodySuffix} COMMAND ${CMAKE_COMMAND} -E env
+                ${agcBodyEnvironment} "$<TARGET_FILE:agc_driver_loop_structured_image_exit_tests>" --validation)
+        set_tests_properties(agc_driver_loop_structured_image_exit_validation${agcBodySuffix} PROPERTIES
+                ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1" TIMEOUT 30)
+        if(WIN32)
+            set_tests_properties(agc_driver_loop_structured_image_exit_validation${agcBodySuffix} PROPERTIES ENVIRONMENT_MODIFICATION
+                    "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+        endif()
+    endforeach()
     add_test(NAME agc_driver_pm4_failure COMMAND agc_driver_pm4_tests failure)
     set_tests_properties(agc_driver_pm4_failure PROPERTIES ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1" SKIP_RETURN_CODE 77)
     if(WIN32)
