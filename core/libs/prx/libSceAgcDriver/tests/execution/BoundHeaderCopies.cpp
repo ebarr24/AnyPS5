@@ -144,7 +144,7 @@ void StaticCopies() {
     AgcDriverWaitIdle_nid_postfix();
     for (std::size_t offset = 0; offset < BlockBytes; ++offset) {
         const auto expected = offset < 8u * 16u ? NarrowConstantStoreFixture::ExpectedLane[offset % 16u] : NarrowConstantStoreFixture::Fill;
-        Require(guest.Data()[offset] == expected, "bound copy dispatch used live code/metadata or corrupted a sentinel");
+        Require(guest.Data()[offset] == expected, "bound copy dispatch byte " + std::to_string(offset) + " is " + std::to_string(guest.Data()[offset]) + ", expected " + std::to_string(expected));
     }
     std::puts("static bound copies retained registered immutable code/metadata:8 native lane outputs and65536 bytes including sentinels passed");
 }
