@@ -760,7 +760,26 @@ target_include_directories(agc_driver_prepared_shaders_tests PRIVATE
         $<TARGET_PROPERTY:shader_recompiler_agc_driver,INTERFACE_INCLUDE_DIRECTORIES>
 )
 
+if(TARGET agc_driver_null_pixel_variants_tests)
+    target_link_libraries(agc_driver_null_pixel_variants_tests PRIVATE libSceAgc)
+    target_include_directories(agc_driver_null_pixel_variants_tests PRIVATE
+            ${CMAKE_SOURCE_DIR}/core/shader/recompiler
+            ${CMAKE_SOURCE_DIR}/core/shader/recompiler/IntermediateRepresentation/include
+            ${CMAKE_SOURCE_DIR}/core/shader/recompiler/ControlFlow/include
+            ${CMAKE_SOURCE_DIR}/core/shader/recompiler/RdnaDecoder/include
+            ${CMAKE_SOURCE_DIR}/core/shader/recompiler/Optimization/include)
+endif()
+
 if(BUILD_TESTING)
+    foreach(nullPixelMode IN ITEMS wave32 wave64 guest32 guest64)
+        add_test(NAME agc_driver_null_pixel_variants_${nullPixelMode} COMMAND agc_driver_null_pixel_variants_tests --${nullPixelMode})
+        set_tests_properties(agc_driver_null_pixel_variants_${nullPixelMode} PROPERTIES
+                ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1" SKIP_RETURN_CODE 77 TIMEOUT 30 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+        if(WIN32)
+            set_tests_properties(agc_driver_null_pixel_variants_${nullPixelMode} PROPERTIES ENVIRONMENT_MODIFICATION
+                    "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+        endif()
+    endforeach()
     foreach(headerCopyMode IN ITEMS graphics rectangle guest layout)
         add_test(NAME agc_driver_bound_header_copies_${headerCopyMode} COMMAND agc_driver_bound_header_copies_tests --${headerCopyMode})
         set_tests_properties(agc_driver_bound_header_copies_${headerCopyMode} PROPERTIES ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1" SKIP_RETURN_CODE 77 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")

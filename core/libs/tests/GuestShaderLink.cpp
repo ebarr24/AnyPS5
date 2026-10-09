@@ -88,6 +88,8 @@ int main() {
     special.ge_cntl.offset = GE_CNTL;
     Require(sceAgcLinkShaders(context.data(), primitive.data(), nullptr, &vertex, nullptr, 2) == 0);
     Require(context[1].value == 1 && primitive[2].value == 2);
+    for (unsigned i = 0; i < 32; ++i)
+        Require(context[i + 2].offset == SPI_PS_INPUT_CNTL_0 + i && context[i + 2].value == i);
     ShaderSemantic output{};
     output.semantic = 9;
     output.hardware_mapping = 5;
