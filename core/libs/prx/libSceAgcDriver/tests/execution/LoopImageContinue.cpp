@@ -85,7 +85,21 @@ void Literal(std::vector<std::uint32_t>& code, std::uint32_t destination, float 
     code.push_back(std::bit_cast<std::uint32_t>(value));
 }
 
-std::vector<std::uint32_t> Code(bool table, bool fragment, bool loop, bool array = true) {
+std::size_t BeginLoop(std::vector<std::uint32_t>& code, bool header) {
+    const auto begin = code.size();
+    if (header) code.insert(code.end(), {0xbf0a8428, 0xbf840000});
+    return begin;
+}
+
+void EndLoop(std::vector<std::uint32_t>& code, std::size_t begin, bool header) {
+    code.push_back(0x80288128);
+    if (!header) code.push_back(0xbf0a8428);
+    const auto offset = static_cast<std::int32_t>(begin) - static_cast<std::int32_t>(code.size() + 1u);
+    code.push_back((header ? 0xbf820000u : 0xbf850000u) | (static_cast<std::uint32_t>(offset) & 0xffffu));
+    if (header) code.at(begin + 1u) |= static_cast<std::uint32_t>(code.size() - begin - 2u);
+}
+
+std::vector<std::uint32_t> Code(bool table, bool fragment, bool loop, bool array = true, bool header = false) {
     std::vector<std::uint32_t> code;
     if (table) {
         code = {0xf4080100, 0xfa000000, 0xf4080200, 0xfa000010, 0xf4080300, 0xfa000020,
@@ -94,7 +108,7 @@ std::vector<std::uint32_t> Code(bool table, bool fragment, bool loop, bool array
         for (std::uint32_t reg = 1; reg <= 6; ++reg) Vop1(code, 1u, reg, 0x80u);
     }
     code.push_back(0xbea80380);
-    const auto begin = code.size();
+    const auto begin = BeginLoop(code, header);
     if (table) {
         Literal(code, 0u, 0.0625f);
         Vop1(code, 6u, 1u, 40u);
@@ -117,11 +131,7 @@ std::vector<std::uint32_t> Code(bool table, bool fragment, bool loop, bool array
         code.push_back(0x340e0e84);
         code.insert(code.end(), {0xe0781000, table ? 0x80070807u : 0x80030807u});
     }
-    if (loop) {
-        code.insert(code.end(), {0x80288128, 0xbf0a8428});
-        const auto offset = static_cast<std::int32_t>(begin) - static_cast<std::int32_t>(code.size() + 1u);
-        code.push_back(0xbf850000u | (static_cast<std::uint32_t>(offset) & 0xffffu));
-    }
+    if (loop) EndLoop(code, begin, header);
     if (fragment) code.insert(code.end(), {0xf800180f, 0x0b0a0908});
     code.push_back(0xbf810000);
     return code;
@@ -153,10 +163,10 @@ std::vector<MemoryRegion> Memory(std::span<const std::uint32_t> code) {
     return {{reinterpret_cast<std::uintptr_t>(code.data()), std::as_bytes(code)}, {reinterpret_cast<std::uintptr_t>(&Bindless), std::as_bytes(std::span(&Bindless, 1))}};
 }
 
-void Compute(AgcDriver::VulkanDevice& device, std::uint32_t wave, bool table, bool loop) {
+void Compute(AgcDriver::VulkanDevice& device, std::uint32_t wave, bool table, bool loop, bool header = false) {
     Fill(!table);
     Output.fill(Sentinel);
-    const auto code = Code(table, false, loop);
+    const auto code = Code(table, false, loop, true, header);
     const auto user = UserData(table);
     const auto memory = Memory(code);
     const ShaderComputeStageInfo compute{{1u, 1u, 1u}, 0u, {false, false, false}, false, 1u};
@@ -176,21 +186,17 @@ void Compute(AgcDriver::VulkanDevice& device, std::uint32_t wave, bool table, bo
         }
     }
     for (std::uint32_t word = iterations * 4u; word < Output.size(); ++word) Require(Output[word] == Sentinel, "loop image output sentinel overwritten");
-    std::printf("compute wave%u %s %s: %u enabled samples, values and sentinels passed\n", wave, table ? "bindless2D" : "direct2D-array", loop ? "continue" : "outside-loop", iterations);
+    std::printf("compute wave%u %s %s: %u enabled samples, values and sentinels passed\n", wave, table ? "bindless2D" : "direct2D-array", header ? "unconditional-continue" : loop ? "conditional-continue" : "outside-loop", iterations);
 }
 
-void Write(AgcDriver::VulkanDevice& device, std::uint32_t wave, bool loop) {
+void Write(AgcDriver::VulkanDevice& device, std::uint32_t wave, bool loop, bool header = false) {
     Texels.fill(std::byte{0});
     auto texture = Texture(true);
     texture[1] = (texture[1] & ~0x3ff00000u) | (22u << 20u);
     std::vector<std::uint32_t> code{0xbea80380, 0x7e020280, 0x7e040280};
-    const auto begin = code.size();
+    const auto begin = BeginLoop(code, header);
     code.insert(code.end(), {0x7e060228, 0x7e100c28, 0x061010f2, 0xf0200128, 0x00000801});
-    if (loop) {
-        code.insert(code.end(), {0x80288128, 0xbf0a8428});
-        const auto offset = static_cast<std::int32_t>(begin) - static_cast<std::int32_t>(code.size() + 1u);
-        code.push_back(0xbf850000u | (static_cast<std::uint32_t>(offset) & 0xffffu));
-    }
+    if (loop) EndLoop(code, begin, header);
     code.push_back(0xbf810000);
     const auto memory = Memory(code);
     const ShaderComputeStageInfo compute{{1u, 1u, 1u}, 0u, {false, false, false}, false, 1u};
@@ -216,10 +222,10 @@ void Write(AgcDriver::VulkanDevice& device, std::uint32_t wave, bool loop) {
             }
         }
     }
-    std::printf("compute wave%u direct2D-array no-value write %s: %u enabled writes and untouched texels passed\n", wave, loop ? "continue" : "outside-loop", loop ? Layers : 1u);
+    std::printf("compute wave%u direct2D-array no-value write %s: %u enabled writes and untouched texels passed\n", wave, header ? "unconditional-continue" : loop ? "conditional-continue" : "outside-loop", loop ? Layers : 1u);
 }
 
-void Phi(AgcDriver::VulkanDevice& device, std::uint32_t wave) {
+void Phi(AgcDriver::VulkanDevice& device, std::uint32_t wave, bool header = false) {
     constexpr std::uint32_t threads = 64;
     Fill(true);
     PhiOutput.fill(Sentinel);
@@ -229,12 +235,10 @@ void Phi(AgcDriver::VulkanDevice& device, std::uint32_t wave) {
     Vop1(code, 6u, 12u, 0x100u);
     Vop1(code, 1u, 7u, 0x100u);
     code.push_back(0x340e0e82);
-    const auto begin = code.size();
+    const auto begin = BeginLoop(code, header);
     Vop1(code, 6u, 3u, 40u);
-    code.insert(code.end(), {0xf09c0f28, 0x00400801, 0xbf8c3f70, 0x0618110c, 0xe0701000, 0x80030c07,
-                             0x80288128, 0xbf0a8428});
-    const auto offset = static_cast<std::int32_t>(begin) - static_cast<std::int32_t>(code.size() + 1u);
-    code.push_back(0xbf850000u | (static_cast<std::uint32_t>(offset) & 0xffffu));
+    code.insert(code.end(), {0xf09c0f28, 0x00400801, 0xbf8c3f70, 0x0618110c, 0xe0701000, 0x80030c07});
+    EndLoop(code, begin, header);
     code.push_back(0xbf810000);
     auto user = UserData(false);
     const auto output = Buffer(PhiOutput.data(), 0u, sizeof(PhiOutput));
@@ -254,25 +258,26 @@ void Phi(AgcDriver::VulkanDevice& device, std::uint32_t wave) {
         Require(std::fabs(actual - expected) < 1e-4f, "loop image Phi value: wave" + std::to_string(wave) + " lane " + std::to_string(lane) + " actual " + std::to_string(actual));
     }
     for (std::uint32_t word = threads; word < PhiOutput.size(); ++word) Require(PhiOutput[word] == Sentinel, "loop image Phi output sentinel overwritten");
-    std::printf("compute wave%u direct2D-array loop-carried Phi: %u distinct lane values, four iterations and sentinels passed\n", wave, threads);
+    std::printf("compute wave%u direct2D-array %s loop-carried Phi: %u distinct lane values, four iterations and sentinels passed\n", wave, header ? "unconditional" : "conditional", threads);
 }
 
 void RunCase(AgcDriver::VulkanDevice& device, std::string_view selected) {
     for (const auto wave : {32u, 64u}) {
-        if (selected == "compute-phi-" + std::to_string(wave) + "-loop") {
-            Phi(device, wave);
-            return;
-        }
-        for (const auto loop : {false, true}) {
-            const auto suffix = "-" + std::to_string(wave) + (loop ? "-loop" : "-outside");
+        for (const std::string_view flow : {"outside", "loop", "header"}) {
+            const bool loop = flow != "outside", header = flow == "header";
+            const auto suffix = "-" + std::to_string(wave) + "-" + std::string(flow);
+            if (loop && selected == "compute-phi" + suffix) {
+                Phi(device, wave, header);
+                return;
+            }
             for (const auto table : {false, true}) {
                 if (selected == std::string(table ? "compute-bindless" : "compute-direct") + suffix) {
-                    Compute(device, wave, table, loop);
+                    Compute(device, wave, table, loop, header);
                     return;
                 }
             }
             if (selected == "compute-write" + suffix) {
-                Write(device, wave, loop);
+                Write(device, wave, loop, header);
                 return;
             }
         }
@@ -280,7 +285,7 @@ void RunCase(AgcDriver::VulkanDevice& device, std::string_view selected) {
     throw std::runtime_error("unknown loop image synthetic case");
 }
 
-void Fragment(AgcDriver::VulkanDevice& device, std::uint32_t wave, bool loop, bool array) {
+void Fragment(AgcDriver::VulkanDevice& device, std::uint32_t wave, bool loop, bool array, bool header = false) {
     constexpr std::uint32_t width = 64, height = 16;
     constexpr std::array<std::array<float, 4>, 3> vertices{{{-1.0f, -1.0f, 0.5f, 1.0f}, {3.0f, -1.0f, 0.5f, 1.0f}, {-1.0f, 3.0f, 0.5f, 1.0f}}};
     constexpr std::array<std::uint32_t, 6> vertexCode{0xe0382000, 0x80000005, 0xbf8c3f70, 0xf80008cf, 0x03020100, 0xbf810000};
@@ -297,7 +302,7 @@ void Fragment(AgcDriver::VulkanDevice& device, std::uint32_t wave, bool loop, bo
     pixel.wave32 = wave == 32u;
     pixel.targetOutputMode[0] = 9u;
     pixel.targetExportMapping.fill(0xe4u);
-    const auto code = Code(false, true, loop, array);
+    const auto code = Code(false, true, loop, array, header);
     auto user = UserData(false);
     const auto texture = Texture(array);
     std::copy(texture.begin(), texture.end(), user.begin());
@@ -341,21 +346,23 @@ int main(int argc, char** argv) {
             RunCase(*device, argv[2]);
             return 0;
         }
-        const bool fragment = argc == 2 && std::string_view(argv[1]) == "--fragment";
-        if (argc != 1 && !fragment) throw std::runtime_error("select --fragment or --case <public synthetic case>");
+        const bool header = argc == 2 && (std::string_view(argv[1]) == "--header" || std::string_view(argv[1]) == "--fragment-header");
+        const bool fragment = argc == 2 && (std::string_view(argv[1]) == "--fragment" || std::string_view(argv[1]) == "--fragment-header");
+        if (argc != 1 && !fragment && !header) throw std::runtime_error("select --fragment, --header, --fragment-header or --case <public synthetic case>");
         if (fragment && device->Target().subgroupSize < 32u) {
             std::printf("skipped fragment wave32/wave64, native subgroup %u cannot hold a wave32\n", device->Target().subgroupSize);
             return VulkanTestSkipped;
         }
         for (const auto wave : {32u, 64u}) {
             for (const auto loop : {false, true}) {
-                if (fragment) for (const auto array : {true, false}) Fragment(*device, wave, loop, array);
+                if (header && !loop) continue;
+                if (fragment) for (const auto array : {true, false}) Fragment(*device, wave, loop, array, header);
                 else {
-                    for (const auto table : {false, true}) Compute(*device, wave, table, loop);
-                    Write(*device, wave, loop);
+                    for (const auto table : {false, true}) Compute(*device, wave, table, loop, header);
+                    Write(*device, wave, loop, header);
                 }
             }
-            if (!fragment) Phi(*device, wave);
+            if (!fragment) Phi(*device, wave, header);
         }
         std::puts("loop image continue tests passed");
         return 0;

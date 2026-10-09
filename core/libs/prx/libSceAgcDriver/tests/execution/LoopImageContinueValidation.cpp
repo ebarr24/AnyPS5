@@ -17,17 +17,21 @@ void CompileCase(std::string_view selected) {
     const bool fragment = selected.starts_with("fragment");
     const bool write = selected.find("write") != std::string_view::npos;
     const bool implicit = selected.find("implicit") != std::string_view::npos;
-    const bool loop = selected.ends_with("loop");
+    const bool header = selected.ends_with("header");
+    const bool loop = selected.ends_with("loop") || header;
     const std::uint32_t wave = selected.find("64") != std::string_view::npos ? 64u : 32u;
     std::vector<std::uint32_t> code{0xbea80380, 0x7e020280, 0x7e040280, 0x7e060280, 0x7e080280, 0x7e0a0280, 0x7e0c0280};
     const auto begin = code.size();
+    if (header) code.insert(code.end(), {0xbf0a8428, 0xbf840000});
     if (write) code.insert(code.end(), {0x7e060228, 0x7e100c28, 0x061010f2, 0xf0200128, 0x00000801});
     else if (implicit) code.insert(code.end(), {0x7e040c28, 0xf0800f08, 0x00400801});
     else code.insert(code.end(), {0x7e060c28, 0xf09c0f28, 0x00400801});
     if (loop) {
-        code.insert(code.end(), {0x80288128, 0xbf0a8428});
+        code.push_back(0x80288128);
+        if (!header) code.push_back(0xbf0a8428);
         const auto offset = static_cast<std::int32_t>(begin) - static_cast<std::int32_t>(code.size() + 1u);
-        code.push_back(0xbf850000u | (static_cast<std::uint32_t>(offset) & 0xffffu));
+        code.push_back((header ? 0xbf820000u : 0xbf850000u) | (static_cast<std::uint32_t>(offset) & 0xffffu));
+        if (header) code.at(begin + 1u) |= static_cast<std::uint32_t>(code.size() - begin - 2u);
     }
     if (fragment) code.insert(code.end(), {0xf800180f, 0x0b0a0908});
     else if (!write) code.insert(code.end(), {0xe0700000, 0x80030800});
@@ -72,14 +76,14 @@ int main(int argc, char** argv) {
             for (const auto stage : {"compute", "fragment"}) {
                 for (const auto kind : {"sample", "write"}) {
                     for (const auto wave : {"32", "64"}) {
-                        for (const auto flow : {"outside", "loop"}) CompileCase(std::string(stage) + "-" + kind + "-" + wave + "-" + flow);
+                        for (const auto flow : {"outside", "loop", "header"}) CompileCase(std::string(stage) + "-" + kind + "-" + wave + "-" + flow);
                     }
                 }
             }
             for (const auto wave : {"32", "64"}) {
-                for (const auto flow : {"outside", "loop"}) CompileCase(std::string("fragment-implicit-") + wave + "-" + flow);
+                for (const auto flow : {"outside", "loop", "header"}) CompileCase(std::string("fragment-implicit-") + wave + "-" + flow);
             }
-            std::puts("loop image continue validation passed: 20 public stage/write/implicit cases");
+            std::puts("loop image continue validation passed: 30 public stage/write/implicit and conditional/unconditional cases");
         } else throw std::runtime_error("select a synthetic stage/write/wave/loop case or run all cases");
         return 0;
     } catch (const std::exception& error) {

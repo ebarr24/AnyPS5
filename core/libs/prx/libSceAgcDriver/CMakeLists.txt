@@ -801,6 +801,21 @@ if(BUILD_TESTING)
             set_tests_properties(agc_driver_loop_image_continue_fragment${agcLoopSuffix} PROPERTIES ENVIRONMENT_MODIFICATION
                     "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
         endif()
+        foreach(agcLoopHeaderKind IN ITEMS header header_fragment)
+            if(agcLoopHeaderKind STREQUAL "header")
+                set(agcLoopHeaderArgument "--header")
+            else()
+                set(agcLoopHeaderArgument "--fragment-header")
+            endif()
+            add_test(NAME agc_driver_loop_image_continue_${agcLoopHeaderKind}${agcLoopSuffix} COMMAND ${CMAKE_COMMAND} -E env
+                    ${agcLoopEnvironment} "$<TARGET_FILE:agc_driver_loop_image_continue_tests>" ${agcLoopHeaderArgument})
+            set_tests_properties(agc_driver_loop_image_continue_${agcLoopHeaderKind}${agcLoopSuffix} PROPERTIES
+                    ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1" SKIP_RETURN_CODE 77 TIMEOUT 30)
+            if(WIN32)
+                set_tests_properties(agc_driver_loop_image_continue_${agcLoopHeaderKind}${agcLoopSuffix} PROPERTIES ENVIRONMENT_MODIFICATION
+                        "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+            endif()
+        endforeach()
     endforeach()
     add_test(NAME agc_driver_loop_image_continue_validation_none COMMAND ${CMAKE_COMMAND} -E env
             "APS5_SPIRV_OPT=none" "$<TARGET_FILE:agc_driver_loop_image_continue_validation_tests>")
