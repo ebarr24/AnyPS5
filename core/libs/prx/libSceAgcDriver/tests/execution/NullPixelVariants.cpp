@@ -55,6 +55,9 @@ void Variants(AgcDriver::VulkanDevice& device, std::uint32_t wave) {
         Require(snapshot->prepared->entries.size() == 2 && snapshot->prepared->entries.front().handle == original, "null variant overwrote the registered artifact");
         const auto handle = snapshot->prepared->entries.back().handle;
         const auto& artifact = GetPreparedArtifact(*handle);
+        const auto compiledStorage = artifact.spirv.data();
+        const std::vector<std::uint32_t> compiledWords(artifact.spirv.begin(), artifact.spirv.end());
+        std::shared_ptr<const RecompileResult> materialized;
         Require(handle->artifact->layout.pushConstantOffsetBytes == 20, "null variant lost the shared push offset");
         for (const bool useCache : {false, true}) {
             request.useCache = useCache;
@@ -64,7 +67,14 @@ void Variants(AgcDriver::VulkanDevice& device, std::uint32_t wave) {
             runtime.userData = users;
             const auto capture = repeated.Capture(runtime);
             const auto result = repeated.Materialize(*capture);
-            Require(result->variantId == artifact.variantId && result->spirv.data() == artifact.spirv.data(), "null invocation replaced its compiled artifact");
+            Require(result->variantId == artifact.variantId, "null invocation changed its compiled variant identity");
+            Require(artifact.spirv.data() == compiledStorage && std::equal(compiledWords.begin(), compiledWords.end(), artifact.spirv.begin(), artifact.spirv.end()), "null invocation changed its owned compiled words");
+            Require(!result->spirv.empty(), "null invocation materialized an empty module");
+            if (materialized) Require(result->spirv.data() == materialized->spirv.data() && result->specializationId == materialized->specializationId && std::equal(result->spirv.begin(), result->spirv.end(), materialized->spirv.begin(), materialized->spirv.end()), "null invocation did not reuse its ABI module");
+            else materialized = result;
+            const auto again = repeated.Materialize(*capture);
+            Require(again->spirv.data() == result->spirv.data() && again->variantId == result->variantId && std::equal(again->spirv.begin(), again->spirv.end(), result->spirv.begin(), result->spirv.end()), "repeated null materialization changed its module");
+            Require(snapshot->prepared->entries.size() == 2 && snapshot->prepared->entries.front().handle == original && snapshot->prepared->entries.back().handle == handle, "null materialization changed its prepared ownership");
         }
         const auto ownedCode = GetPreparedCode(*handle);
         Require(!ownedCode.empty() && ownedCode.front() == 0xbf810000u, "null artifact lost its owned program");
@@ -73,7 +83,9 @@ void Variants(AgcDriver::VulkanDevice& device, std::uint32_t wave) {
         SrtRuntime runtime{};
         runtime.userData = users;
         const auto capture = invocation.Capture(runtime);
-        Require(!invocation.Materialize(*capture)->spirv.empty(), "null invocation did not retain the snapshot lifetime");
+        const auto retained = invocation.Materialize(*capture);
+        Require(!retained->spirv.empty() && retained->variantId == artifact.variantId && GetPreparedCode(*handle).data() == ownedCode.data(), "null invocation did not retain its owned snapshot lifetime");
+        Require(artifact.spirv.data() == compiledStorage && std::equal(compiledWords.begin(), compiledWords.end(), artifact.spirv.begin(), artifact.spirv.end()), "null lifetime materialization changed its owned compiled words");
         std::printf("null variant wave%u %s-first push20/cap108 cache/lifetime passed\n", wave, sourceFirst ? "source" : "invocation");
     }
 }
