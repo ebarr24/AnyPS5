@@ -185,6 +185,8 @@ void PrepareTerminalContinueLabels(SpirvEmitterState& state, StructuredFunctionS
         const auto* block = TargetBlock(program, loop.continueBlock);
         const auto* info = BlockInfoFor(program, block);
         if (info == nullptr) throw std::runtime_error("SPIR-V continue block has no terminator metadata");
+        const auto* headerBlock = TargetBlock(program, header.id);
+        if (block->Predecessors().size() != 1u || block->Predecessors().front() != headerBlock) continue;
         const auto& term = info->terminator;
         if (term.loopHeader) continue;
         const bool direct = term.kind == TerminatorKind::Branch && term.trueBlock == header.id;
