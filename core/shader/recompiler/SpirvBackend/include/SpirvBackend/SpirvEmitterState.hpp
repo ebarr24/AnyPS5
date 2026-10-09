@@ -195,6 +195,7 @@ struct SpirvDeferredPhiPatch {
 
 struct StructuredFunctionState {
     std::unordered_map<const IrBlock*, std::uint32_t> blockExitLabels;
+    std::unordered_map<const IrBlock*, std::uint32_t> terminalContinueLabels;
     std::vector<SpirvDeferredPhiPatch> deferredPhis;
 };
 

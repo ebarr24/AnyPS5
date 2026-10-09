@@ -177,7 +177,30 @@ std::uint32_t EmitBranchCondition(SpirvValueEmitContext& ctx, const BlockInfo& i
     return result;
 }
 
-void EmitStructuredTerminator(SpirvValueEmitContext& ctx, const IrProgram& program, const BlockInfo& info) {
+void PrepareTerminalContinueLabels(SpirvEmitterState& state, StructuredFunctionState& functionState, const IrProgram& program) {
+    const auto& infos = program.Metadata().blockInfo;
+    for (const auto& header : infos) {
+        const auto& loop = header.terminator;
+        if (!loop.loopHeader || loop.continueBlock == header.id) continue;
+        const auto* block = TargetBlock(program, loop.continueBlock);
+        const auto* info = BlockInfoFor(program, block);
+        if (info == nullptr) throw std::runtime_error("SPIR-V continue block has no terminator metadata");
+        const auto& term = info->terminator;
+        if (term.loopHeader) continue;
+        const bool direct = term.kind == TerminatorKind::Branch && term.trueBlock == header.id;
+        const bool conditional = term.kind == TerminatorKind::ConditionalBranch &&
+            ((term.trueBlock == header.id && term.falseBlock == loop.mergeBlock) ||
+             (term.falseBlock == header.id && term.trueBlock == loop.mergeBlock));
+        if (!direct && !conditional) continue;
+        std::size_t owners = 0;
+        for (const auto& candidate : infos) {
+            owners += candidate.terminator.loopHeader && candidate.terminator.continueBlock == loop.continueBlock;
+        }
+        if (owners == 1u) functionState.terminalContinueLabels.emplace(block, state.module.AllocateId());
+    }
+}
+
+void EmitStructuredTerminator(SpirvValueEmitContext& ctx, StructuredFunctionState& functionState, const IrProgram& program, const BlockInfo& info) {
     auto& state = ctx.state;
     const Terminator& term = info.terminator;
     const auto emitMerge = [&]() {
@@ -185,7 +208,9 @@ void EmitStructuredTerminator(SpirvValueEmitContext& ctx, const IrProgram& progr
             const IrBlock* merge = TargetBlock(program, term.mergeBlock);
             const IrBlock* cont = TargetBlock(program, term.continueBlock);
             if (merge != nullptr && cont != nullptr) {
-                state.module.AddFunction(spv::OpLoopMerge, ctx.Label(merge), ctx.Label(cont), spv::LoopControlMaskNone);
+                const auto terminal = functionState.terminalContinueLabels.find(cont);
+                const auto continueLabel = terminal == functionState.terminalContinueLabels.end() ? ctx.Label(cont) : terminal->second;
+                state.module.AddFunction(spv::OpLoopMerge, ctx.Label(merge), continueLabel, spv::LoopControlMaskNone);
             }
         } else if (term.kind == TerminatorKind::ConditionalBranch && term.mergeBlock != InvalidControlFlowId) {
             if (const IrBlock* merge = TargetBlock(program, term.mergeBlock); merge != nullptr) {
@@ -781,6 +806,7 @@ void EmitControlFlow(SpirvValueEmitContext& context, StructuredFunctionState& fu
     if (blocks.empty() || blocks.front() == nullptr) {
         context.Fail("structured control flow requires at least one block");
     }
+    PrepareTerminalContinueLabels(state, functionState, program);
     if (state.loopGuardLimit != 0) {
         const auto pointer = TypePointer(state, spv::StorageClassPrivate, TypeU32(state));
         if (state.loopGuardVisits == 0) state.loopGuardVisits = state.module.DefineGlobalVariable(pointer, spv::StorageClassPrivate);
@@ -811,8 +837,12 @@ void EmitControlFlow(SpirvValueEmitContext& context, StructuredFunctionState& fu
         state.continueTarget = IsContinueTarget(program, info->id);
         state.bdaStopsInvocations = stops && !state.continueTarget;
         EmitStructuredBlock(context, functionState, block);
+        if (const auto terminal = functionState.terminalContinueLabels.find(block); terminal != functionState.terminalContinueLabels.end()) {
+            state.module.AddFunction(spv::OpBranch, terminal->second);
+            EmitLabel(state, terminal->second);
+        }
         functionState.blockExitLabels.emplace(block, state.currentLabel);
-        EmitStructuredTerminator(context, program, *info);
+        EmitStructuredTerminator(context, functionState, program, *info);
         state.bdaStopsInvocations = stops;
         state.continueTarget = false;
     }
