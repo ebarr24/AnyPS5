@@ -1,0 +1,14 @@
+#version 450
+#ifdef ANYPS5_FORMATLESS
+#extension GL_EXT_shader_image_load_formatted : require
+layout(binding = 0) uniform uimage2D first;
+layout(binding = 1) uniform uimage2DArray second;
+#else
+layout(binding = 0, r8ui) uniform uimage2D first;
+layout(binding = 1, r8ui) uniform uimage2DArray second;
+#endif
+layout(local_size_x = 1, local_size_y = 1) in;
+void main() {
+    imageStore(first, ivec2(0, 0), uvec4(0x15, 0, 0, 0));
+    imageStore(second, ivec3(1, 0, 0), uvec4(0x19, 0, 0, 0));
+}

@@ -678,12 +678,17 @@ VkFormat AttachmentProxyFormat(const Context& context, VkFormat format) {
     return proxy;
 }
 
-StorageTexture::StorageTexture(const Context& context, const GuestTextureResource& descriptor, std::function<bool(bool, VkImage)> residentTransfer) : context(context), detiler(*context.detiler), descriptor(descriptor), residentTransfer(std::move(residentTransfer)) {
+StorageTexture::StorageTexture(const Context& context, const GuestTextureResource& descriptor, std::function<bool(bool, VkImage)> residentTransfer, std::shared_ptr<StorageTexture> residentSource) : context(context), detiler(*context.detiler), descriptor(descriptor), residentTransfer(std::move(residentTransfer)), residentSource(std::move(residentSource)) {
     try {
         storageFormat = StorageFormatForGuest(context, descriptor.format);
         geometry.imageLayers = 1;
         geometry.imageDepth = 1;
         guestBytes = DepthSliceBytes({descriptor.width, descriptor.height}, 1);
+        if (this->residentSource) {
+            image = this->residentSource->Image();
+            view = createView(0, false, storageFormat);
+            return;
+        }
         VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
         info.imageType = VK_IMAGE_TYPE_2D;
         info.format = storageFormat;
@@ -1236,6 +1241,10 @@ LookupOutcomes& ThreadLookupOutcomes() {
 }
 
 bool StorageTexture::Refresh() {
+    if (residentSource) {
+        if (auto* recorder = Recorder::Active()) recorder->Keep(shared_from_this());
+        return residentSource->Refresh();
+    }
     if (residentTransfer) {
         if (auto* recorder = Recorder::Active()) recorder->Keep(shared_from_this());
         const bool copied = residentTransfer(false, image);
@@ -2265,6 +2274,11 @@ bool StorageTexture::overlaps(std::uint64_t address, std::size_t bytes) const {
 }
 
 void StorageTexture::MarkDirty() {
+    if (residentSource) {
+        if (auto* recorder = Recorder::Active()) recorder->Keep(shared_from_this());
+        residentSource->MarkDirty();
+        return;
+    }
     if (residentTransfer) {
         if (auto* recorder = Recorder::Active()) recorder->Keep(shared_from_this());
         residentTransfer(true, image);
@@ -3094,7 +3108,7 @@ bool StorageTexture::FillClear(std::span<const std::uint32_t, 4> pattern, std::u
 }
 
 void StorageTexture::WriteBack() {
-    if (residentTransfer) return;
+    if (residentTransfer || residentSource) return;
     const auto previous = std::exchange(flushReason, "explicit");
     writeBack(descriptor.baseAddress, static_cast<std::size_t>(guestBytes));
     flushReason = previous;
@@ -3811,7 +3825,7 @@ void StorageTexture::release() noexcept {
     if (proxyImage) context.Function<PFN_vkDestroyImage>("vkDestroyImage")(context.device, proxyImage, nullptr);
     if (proxyMemory) context.Function<PFN_vkFreeMemory>("vkFreeMemory")(context.device, proxyMemory, nullptr);
     if (view) context.Function<PFN_vkDestroyImageView>("vkDestroyImageView")(context.device, view, nullptr);
-    if (image) context.Function<PFN_vkDestroyImage>("vkDestroyImage")(context.device, image, nullptr);
+    if (image && !residentSource) context.Function<PFN_vkDestroyImage>("vkDestroyImage")(context.device, image, nullptr);
     if (memory) context.Function<PFN_vkFreeMemory>("vkFreeMemory")(context.device, memory, nullptr);
 }
 

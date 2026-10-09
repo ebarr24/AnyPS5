@@ -620,6 +620,29 @@ foreach(stage IN ITEMS vert frag)
     )
     list(APPEND agcStencilAttachmentHeaders ${shaderHeader})
 endforeach()
+set(agcStencilAliasHeaders)
+foreach(variant IN ITEMS StencilStorageAliases StencilStorageAliasesFormatless)
+    set(shaderSource ${CMAKE_CURRENT_SOURCE_DIR}/tests/shaders/StencilStorageAliases.comp)
+    set(shaderSpv ${agcTestShaderGeneratedRoot}/${variant}.spv)
+    set(shaderHeader ${agcTestShaderGeneratedRoot}/${variant}_spv.h)
+    set(shaderOptions)
+    if(variant STREQUAL "StencilStorageAliasesFormatless")
+        set(shaderOptions -DANYPS5_FORMATLESS=1)
+        set(shaderSymbol STENCIL_STORAGE_ALIASES_FORMATLESS_SPV)
+    else()
+        set(shaderSymbol STENCIL_STORAGE_ALIASES_SPV)
+    endif()
+    add_custom_command(
+            OUTPUT "${shaderHeader}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${agcTestShaderGeneratedRoot}"
+            COMMAND "$<TARGET_FILE:glslang-standalone>" -V --target-env vulkan1.1 ${shaderOptions} -o "${shaderSpv}" "${shaderSource}"
+            COMMAND ${CMAKE_COMMAND} -DINPUT=${shaderSpv} -DOUTPUT=${shaderHeader}
+            -DSYMBOL=${shaderSymbol} -P "${CMAKE_CURRENT_SOURCE_DIR}/embed_spirv.cmake"
+            DEPENDS "${shaderSource}" glslang-standalone
+            VERBATIM
+    )
+    list(APPEND agcStencilAliasHeaders ${shaderHeader})
+endforeach()
 add_test_executable(agc_driver_depth_stencil_storage_tests EXCLUDE_FROM_ALL
         tests/DepthStencilStorage.cpp
         ${agcDepthStencilShaderHeader}
@@ -627,6 +650,7 @@ add_test_executable(agc_driver_depth_stencil_storage_tests EXCLUDE_FROM_ALL
         ${agcDepthStencilArrayHeader}
         ${agcDepthStencilArrayFormatlessHeader}
         ${agcStencilAttachmentHeaders}
+        ${agcStencilAliasHeaders}
 )
 target_include_directories(agc_driver_depth_stencil_storage_tests PRIVATE
         ${LIBS_INCLUDE_DIR}

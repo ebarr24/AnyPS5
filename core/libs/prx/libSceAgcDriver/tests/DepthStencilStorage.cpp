@@ -1,3 +1,5 @@
+#include "StencilStorageAliases_spv.h"
+#include "StencilStorageAliasesFormatless_spv.h"
 #include "DepthStencilStorage_spv.h"
 #include "DepthStencilStorageFormatless_spv.h"
 #include "DepthStencilStorageArray_spv.h"
@@ -268,6 +270,88 @@ private:
     VkShaderModule module = VK_NULL_HANDLE;
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkSampler sampler = VK_NULL_HANDLE;
+};
+
+class DualStorageWrite {
+public:
+    DualStorageWrite(const Context& context, VkImageView first, VkImageView second, bool formatless) : context(context) {
+        try {
+            const std::array<VkDescriptorSetLayoutBinding, 2> bindings{{
+                {0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+                {1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}
+            }};
+            VkDescriptorSetLayoutCreateInfo setInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+            setInfo.bindingCount = bindings.size();
+            setInfo.pBindings = bindings.data();
+            Check(context.Function<PFN_vkCreateDescriptorSetLayout>("vkCreateDescriptorSetLayout")(context.device, &setInfo, nullptr, &setLayout), "dual layout");
+            const VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2};
+            VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+            poolInfo.maxSets = 1;
+            poolInfo.poolSizeCount = 1;
+            poolInfo.pPoolSizes = &size;
+            Check(context.Function<PFN_vkCreateDescriptorPool>("vkCreateDescriptorPool")(context.device, &poolInfo, nullptr, &pool), "dual pool");
+            VkDescriptorSetAllocateInfo allocation{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, nullptr, pool, 1, &setLayout};
+            Check(context.Function<PFN_vkAllocateDescriptorSets>("vkAllocateDescriptorSets")(context.device, &allocation, &set), "dual set");
+            const std::array<VkDescriptorImageInfo, 2> images{{
+                {VK_NULL_HANDLE, first, VK_IMAGE_LAYOUT_GENERAL},
+                {VK_NULL_HANDLE, second, VK_IMAGE_LAYOUT_GENERAL}
+            }};
+            std::array<VkWriteDescriptorSet, 2> writes{};
+            for (std::uint32_t i = 0; i < writes.size(); ++i) {
+                writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[i].dstSet = set;
+                writes[i].dstBinding = i;
+                writes[i].descriptorCount = 1;
+                writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+                writes[i].pImageInfo = &images[i];
+            }
+            context.Function<PFN_vkUpdateDescriptorSets>("vkUpdateDescriptorSets")(context.device, writes.size(), writes.data(), 0, nullptr);
+            VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+            layoutInfo.setLayoutCount = 1;
+            layoutInfo.pSetLayouts = &setLayout;
+            Check(context.Function<PFN_vkCreatePipelineLayout>("vkCreatePipelineLayout")(context.device, &layoutInfo, nullptr, &layout), "dual pipeline layout");
+            VkShaderModuleCreateInfo moduleInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+            moduleInfo.codeSize = formatless ? sizeof(STENCIL_STORAGE_ALIASES_FORMATLESS_SPV) : sizeof(STENCIL_STORAGE_ALIASES_SPV);
+            moduleInfo.pCode = formatless ? STENCIL_STORAGE_ALIASES_FORMATLESS_SPV : STENCIL_STORAGE_ALIASES_SPV;
+            Check(context.Function<PFN_vkCreateShaderModule>("vkCreateShaderModule")(context.device, &moduleInfo, nullptr, &module), "dual shader");
+            VkComputePipelineCreateInfo info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+            info.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, module, "main", nullptr};
+            info.layout = layout;
+            Check(context.Function<PFN_vkCreateComputePipelines>("vkCreateComputePipelines")(context.device, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline), "dual pipeline");
+        } catch (...) { release(); throw; }
+    }
+    ~DualStorageWrite() { release(); }
+private:
+    void release() noexcept {
+        if (pipeline) context.Function<PFN_vkDestroyPipeline>("vkDestroyPipeline")(context.device, pipeline, nullptr);
+        if (module) context.Function<PFN_vkDestroyShaderModule>("vkDestroyShaderModule")(context.device, module, nullptr);
+        if (layout) context.Function<PFN_vkDestroyPipelineLayout>("vkDestroyPipelineLayout")(context.device, layout, nullptr);
+        if (pool) context.Function<PFN_vkDestroyDescriptorPool>("vkDestroyDescriptorPool")(context.device, pool, nullptr);
+        if (setLayout) context.Function<PFN_vkDestroyDescriptorSetLayout>("vkDestroyDescriptorSetLayout")(context.device, setLayout, nullptr);
+    }
+public:
+    void Run() {
+        auto* recorder = Recorder::Active();
+        std::unique_ptr<CommandBatch> batch;
+        if (recorder == nullptr) batch = std::make_unique<CommandBatch>(context);
+        const auto commands = recorder ? recorder->Commands() : batch->Handle();
+        RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                            VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+        context.Function<PFN_vkCmdBindPipeline>("vkCmdBindPipeline")(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+        context.Function<PFN_vkCmdBindDescriptorSets>("vkCmdBindDescriptorSets")(commands, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0, nullptr);
+        context.Function<PFN_vkCmdDispatch>("vkCmdDispatch")(commands, 1, 1, 1);
+        RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                            VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT);
+        if (batch) batch->SubmitAndWait();
+    }
+private:
+    Context context;
+    VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkShaderModule module = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
 };
 
 DepthTarget Target(bool compressed = false) {
@@ -578,6 +662,57 @@ void Run(const Context& context, bool recorded, bool formatless, bool array) {
     ClearDepthSurfaces(context.device);
 }
 
+void SimultaneousAliases(const Context& context, bool recorded, bool arrayFirst, bool formatless) {
+    std::unique_ptr<Recorder> recorder;
+    if (recorded) {
+        recorder = std::make_unique<Recorder>(context);
+        recorder->Activate();
+    }
+    const auto target = Target();
+    DepthSurfaceView(context, target);
+    const auto stencilWords = Descriptor(target.stencilAddress, VK_FORMAT_R8_UINT);
+    const auto arrayWords = Descriptor(target.stencilAddress, VK_FORMAT_R8_UINT, true);
+    const auto depthWords = Descriptor(target.address, VK_FORMAT_R32_SFLOAT);
+    const VkComponentMapping components{VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
+    auto stencil = DepthSurfaceTexture(context, stencilWords, DecodeTextureResource(stencilWords), components);
+    auto depth = DepthSurfaceTexture(context, depthWords, DecodeTextureResource(depthWords), components);
+    auto first = CachedStorageSurface(context, DecodeTextureResource(arrayFirst ? arrayWords : stencilWords));
+    auto second = CachedStorageSurface(context, DecodeTextureResource(arrayFirst ? stencilWords : arrayWords));
+    auto twoDimensional = arrayFirst ? second : first;
+    auto array = arrayFirst ? first : second;
+    Buffer results(context, 64, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    DualStorageWrite writes(context, twoDimensional->View(), array->View(), formatless);
+    Compute sample(context, twoDimensional->View(), stencil->View(), depth->View(), results);
+    writes.Run();
+    first->MarkDirty();
+    second->MarkDirty();
+    sample.Run(1);
+    Require(twoDimensional->Image() == array->Image(), "stencil aliases did not share one backing image");
+    Require(first->Version() == second->Version(), "stencil aliases did not share the content version");
+    std::weak_ptr<StorageTexture> pendingFirst = first;
+    std::weak_ptr<StorageTexture> pendingSecond = second;
+    if (recorder) {
+        ClearDepthSurfaces(context.device);
+        first.reset();
+        second.reset();
+        twoDimensional.reset();
+        array.reset();
+        Require(!pendingFirst.expired() && !pendingSecond.expired(), "pending aliases lost their shared image");
+        recorder->Sync();
+        Require(pendingFirst.expired() && pendingSecond.expired(), "completed aliases retained their shared image");
+    }
+    results.Invalidate();
+    std::array<std::uint32_t, 16> pixels{};
+    std::memcpy(pixels.data(), results.Bytes().data(), sizeof(pixels));
+    for (std::size_t i = 0; i < 8; ++i) {
+        const std::uint32_t expected = i == 0 ? 0x15u : i == 1 ? 0x19u : 0x11u;
+        Require(pixels[i * 2] == expected, "simultaneous stencil aliases lost pixel " + std::to_string(i) + ": " + std::to_string(pixels[i * 2]) + " != " + std::to_string(expected));
+        Require(pixels[i * 2 + 1] == std::bit_cast<std::uint32_t>(0.375f), "simultaneous stencil aliases changed depth");
+    }
+    std::cout << "simultaneous stencil aliases passed: " << (recorded ? "recorded " : "immediate ") << (arrayFirst ? "array first " : "2D first ") << (formatless ? "formatless" : "typed") << '\n';
+    ClearDepthSurfaces(context.device);
+}
+
 void PendingClear(const Context& context, bool array) {
     Recorder recorder(context);
     recorder.Activate();
@@ -619,6 +754,8 @@ int main() {
             for (const bool formatless : {false, true}) {
                 Run(device->GetContext(), false, formatless, array);
                 Run(device->GetContext(), true, formatless, array);
+                SimultaneousAliases(device->GetContext(), false, array, formatless);
+                SimultaneousAliases(device->GetContext(), true, array, formatless);
             }
             PendingClear(device->GetContext(), array);
         }

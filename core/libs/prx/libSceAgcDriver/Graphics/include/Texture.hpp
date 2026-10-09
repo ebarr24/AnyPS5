@@ -118,7 +118,7 @@ VkFormat AttachmentProxyFormat(const Context& context, VkFormat format);
 // or it leaves the cache. Dispatches reusing the image meanwhile skip the round trip entirely.
 class StorageTexture : public std::enable_shared_from_this<StorageTexture> {
 public:
-    StorageTexture(const Context& context, const GuestTextureResource& descriptor, std::function<bool(bool, VkImage)> residentTransfer);
+    StorageTexture(const Context& context, const GuestTextureResource& descriptor, std::function<bool(bool, VkImage)> residentTransfer, std::shared_ptr<StorageTexture> residentSource = {});
     StorageTexture(const Context& context, TextureDetiler& detiler, const GuestTextureResource& descriptor, std::uint32_t mipLevel);
     ~StorageTexture();
     StorageTexture(const StorageTexture&) = delete;
@@ -278,7 +278,7 @@ public:
     // Content version: advances when the image is re-uploaded or a shader wrote it. Together with
     // Generation (the write generation guest memory was last known to match the content at) it
     // validates textures copied from this image.
-    std::uint64_t Version() const { return version; }
+    std::uint64_t Version() const { return residentSource ? residentSource->Version() : version; }
     std::uint64_t Generation() const { return generation; }
     // The DCC keys the content was uploaded under and the last scan of the surface's keys
     // (ProvedClearKeys): Refresh's own key rule for the fast revalidation. Under
@@ -476,6 +476,7 @@ private:
     bool dirty = false;
     std::uint64_t version = 0;
     std::function<bool(bool, VkImage)> residentTransfer;
+    std::shared_ptr<StorageTexture> residentSource;
     // `original` holds the guest bytes; false after a GPU-side clear, which never read them.
     bool originalValid = true;
     // The storage cache let the image go (Flush): a lookup makes a new image of the surface, so

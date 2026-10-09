@@ -123,6 +123,10 @@ public:
         }
         auto texture = storage[resource.dimension].lock();
         if (texture == nullptr) {
+            std::shared_ptr<StorageTexture> source;
+            for (const auto& [dimension, cached] : storage) {
+                if ((source = cached.lock())) break;
+            }
             if (transfer == nullptr) transfer = std::make_unique<DeviceBuffer>(context, static_cast<std::size_t>(target.extent.width) * target.extent.height, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
             texture = std::make_shared<StorageTexture>(context, resource, [owner = shared_from_this(), seen = ~0ull](bool store, VkImage storageImage) mutable {
                 if (!store && seen == owner->revision) return false;
@@ -130,7 +134,7 @@ public:
                 if (store) ++owner->revision;
                 seen = owner->revision;
                 return true;
-            });
+            }, std::move(source));
             storage[resource.dimension] = texture;
         }
         texture->Refresh();
