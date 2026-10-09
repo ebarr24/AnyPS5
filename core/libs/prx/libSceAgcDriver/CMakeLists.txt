@@ -747,6 +747,7 @@ foreach(agcExecutionTestSource IN LISTS agcExecutionTestSources)
 endforeach()
 
 target_include_directories(agc_driver_prepared_exports_tests PRIVATE $<TARGET_PROPERTY:shader_recompiler_agc_driver,INTERFACE_INCLUDE_DIRECTORIES>)
+target_include_directories(agc_driver_loop_image_continue_validation_tests PRIVATE $<TARGET_PROPERTY:shader_recompiler_agc_driver,INTERFACE_INCLUDE_DIRECTORIES>)
 
 target_include_directories(agc_driver_prepared_publication_tests PRIVATE $<TARGET_PROPERTY:shader_recompiler_agc_driver,INTERFACE_INCLUDE_DIRECTORIES>)
 
@@ -776,6 +777,39 @@ if(BUILD_TESTING)
         endif()
     endforeach()
     set_tests_properties(agc_driver_flat_store PROPERTIES RUN_SERIAL TRUE)
+    foreach(agcLoopMode IN ITEMS default none)
+        if(agcLoopMode STREQUAL "default")
+            set(agcLoopSuffix "")
+            set(agcLoopEnvironment "--unset=APS5_SPIRV_OPT")
+        else()
+            set(agcLoopSuffix "_none")
+            set(agcLoopEnvironment "APS5_SPIRV_OPT=none")
+            add_test(NAME agc_driver_loop_image_continue_none COMMAND ${CMAKE_COMMAND} -E env
+                    ${agcLoopEnvironment} "$<TARGET_FILE:agc_driver_loop_image_continue_tests>")
+            set_tests_properties(agc_driver_loop_image_continue_none PROPERTIES
+                    ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1" SKIP_RETURN_CODE 77 TIMEOUT 30)
+            if(WIN32)
+                set_tests_properties(agc_driver_loop_image_continue_none PROPERTIES ENVIRONMENT_MODIFICATION
+                        "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+            endif()
+        endif()
+        add_test(NAME agc_driver_loop_image_continue_fragment${agcLoopSuffix} COMMAND ${CMAKE_COMMAND} -E env
+                ${agcLoopEnvironment} "$<TARGET_FILE:agc_driver_loop_image_continue_tests>" --fragment)
+        set_tests_properties(agc_driver_loop_image_continue_fragment${agcLoopSuffix} PROPERTIES
+                ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1" SKIP_RETURN_CODE 77 TIMEOUT 30)
+        if(WIN32)
+            set_tests_properties(agc_driver_loop_image_continue_fragment${agcLoopSuffix} PROPERTIES ENVIRONMENT_MODIFICATION
+                    "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+        endif()
+    endforeach()
+    add_test(NAME agc_driver_loop_image_continue_validation_none COMMAND ${CMAKE_COMMAND} -E env
+            "APS5_SPIRV_OPT=none" "$<TARGET_FILE:agc_driver_loop_image_continue_validation_tests>")
+    set_tests_properties(agc_driver_loop_image_continue_validation_none PROPERTIES
+            ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1" SKIP_RETURN_CODE 77 TIMEOUT 30)
+    if(WIN32)
+        set_tests_properties(agc_driver_loop_image_continue_validation_none PROPERTIES ENVIRONMENT_MODIFICATION
+                "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+    endif()
     add_test(NAME agc_driver_pm4_failure COMMAND agc_driver_pm4_tests failure)
     set_tests_properties(agc_driver_pm4_failure PROPERTIES ENVIRONMENT "ANYPS5_NO_SHADER_CACHE=1" SKIP_RETURN_CODE 77)
     if(WIN32)
