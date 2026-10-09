@@ -6,8 +6,10 @@
 #include "prx/libSceAgc/Shader/include/ShaderConstants.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
 #include <cstddef>
+#include <chrono>
 #include <iostream>
 #include <string_view>
+#include <thread>
 
 extern "C" int APS5_VABI sceAgcCreateInterpolantMapping(ShaderRegister*, const Shader*, const Shader*);
 extern "C" int APS5_VABI sceAgcLinkShaders(ShaderRegister*, ShaderRegister*, const void*, const Shader*, const Shader*, std::uint32_t);
@@ -139,13 +141,18 @@ void StaticCopies() {
     std::vector<std::uint32_t> commands;
     for (std::size_t i = 0; i < 9u; ++i) commands.insert(commands.end(), {0xc0017600u, frozen[i].offset, frozen[i].value});
     commands.insert(commands.end(), {0xc0031500u, 1, 1, 1, 0x8041});
-    alignas(64) std::uint32_t completed = 0;
+    alignas(64) volatile std::uint32_t completed = 0;
     const auto completionAddress = reinterpret_cast<std::uintptr_t>(&completed);
     commands.insert(commands.end(), {0xc0064900u, 0x514u, (1u << 29u) | (2u << 24u), static_cast<std::uint32_t>(completionAddress), static_cast<std::uint32_t>(completionAddress >> 32u), 1, 0, 0});
     commands.insert(commands.end(), {0xc0053c00u, 0x13u, static_cast<std::uint32_t>(completionAddress), static_cast<std::uint32_t>(completionAddress >> 32u), 1, 0xffffffffu, 0x19u});
     Packet packet{commands.data(), static_cast<std::uint32_t>(commands.size()), 0, {}};
     sceAgcDriverSubmitAcb(0x20, &packet);
     AgcDriverWaitIdle_nid_postfix();
+    const auto started = std::chrono::steady_clock::now();
+    while (completed != 1) {
+        Require(std::chrono::steady_clock::now() - started < std::chrono::seconds(10), "bound copy dispatch completion timed out");
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
     Require(completed == 1, "bound copy dispatch completion label was not published");
     for (std::size_t offset = 0; offset < BlockBytes; ++offset) {
         const auto expected = offset < 8u * 16u ? NarrowConstantStoreFixture::ExpectedLane[offset % 16u] : NarrowConstantStoreFixture::Fill;
