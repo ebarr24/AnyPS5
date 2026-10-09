@@ -1,6 +1,8 @@
 #define main PreparedShadersReferenceEntryPoint
 #include "PreparedShaders.cpp"
 #undef main
+#include "CompiledVariant.hpp"
+#include "prx/libSceAgcDriver/Execution/include/ShaderPreparation.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/State.hpp"
 #include "prx/libSceAgcDriver/Execution/include/GuestMemory.hpp"
 #include "prx/libc/include/GuestAllocations.hpp"
@@ -53,7 +55,7 @@ void Variants(AgcDriver::VulkanDevice& device, std::uint32_t wave) {
         Require(snapshot->prepared->entries.size() == 2 && snapshot->prepared->entries.front().handle == original, "null variant overwrote the registered artifact");
         const auto handle = snapshot->prepared->entries.back().handle;
         const auto& artifact = GetPreparedArtifact(*handle);
-        Require(artifact.layout.pushConstantOffsetBytes == 20, "null variant lost the shared push offset");
+        Require(handle->artifact->layout.pushConstantOffsetBytes == 20, "null variant lost the shared push offset");
         for (const bool useCache : {false, true}) {
             request.useCache = useCache;
             Require(SourceHandleFor(*snapshot, 0, request) == handle && snapshot->prepared->entries.size() == 2, "null source cache was not reused");
@@ -161,7 +163,7 @@ public:
     std::byte* data = nullptr;
 };
 
-alignas(256) constexpr std::array<std::uint32_t, 6> DrawVertexCode{0xe0382000u, 0x80000005u, 0xbf8c3f70u, 0xf80008cfu, 0x03020100u, 0xbf810000u};
+alignas(256) constexpr std::array<std::uint32_t, 6> DrawVertexCode{0xe0382000u, 0x80020005u, 0xbf8c3f70u, 0xf80008cfu, 0x03020100u, 0xbf810000u};
 alignas(256) constexpr std::array<std::uint32_t, 4> DrawWhiteCode{0x7e0e02f2u, 0xf800180fu, 0x07070707u, 0xbf810000u};
 alignas(256) constexpr std::array<std::uint32_t, 4> DrawBlackCode{0x7e0e0280u, 0xf800180fu, 0x07070707u, 0xbf810000u};
 alignas(256) std::array<std::array<float, 4>, 3> DrawTriangle{{{-1, -1, 0.5f, 1}, {3, -1, 0.5f, 1}, {-1, 3, 0.5f, 1}}};
@@ -170,6 +172,7 @@ struct DrawHeader {
     Shader shader{};
     std::array<ShaderRegister, 7> registers{};
     std::array<ShaderRegister, 5> context{};
+    ShaderUserData users{};
     void Initialize(std::span<const std::uint32_t> code, std::uint8_t type, std::uint32_t wave) {
         shader.file_header = 0x34333231u;
         shader.version = 0x18u;
@@ -177,6 +180,7 @@ struct DrawHeader {
         shader.header_size = sizeof(*this);
         shader.shader_size = code.size_bytes();
         shader.type = type;
+        shader.user_data = &users;
         shader.sh_registers = registers.data();
         shader.num_sh_registers = type == 2 ? 7 : 3;
         shader.cx_registers = context.data();
