@@ -41,7 +41,7 @@ jobs:
             }
       - uses: actions/checkout@v7
         with:
-          ref: 108584e5fd3146782451e2395ff5005789b452ab
+          ref: bba53098427f22c0fc2905a616fd3305f0bb5a49
           persist-credentials: false
           submodules: true
       - uses: hendrikmuhs/ccache-action@v1.2.24
