@@ -24,8 +24,8 @@ jobs:
       - uses: actions/github-script@v8
         id: gate
         env:
-          BASE_SHA: ca4ab0d5d66f3855991fa95eec6e7e15e34e24c6
-          CANDIDATE_SHA: 36c779efd2ce7636e790680336ed2ffd2930b1ff
+          BASE_SHA: 325e0a8bdd44c8f1868f41c7190d9dc5cae0467e
+          CANDIDATE_SHA: e5f6ad95a0a65fb416a3d5018d647696256f4f77
           PR_SCHEMA_INPUT: ${{ inputs.pr }}
           TRIGGERING_ACTOR: ${{ github.triggering_actor }}
         with:

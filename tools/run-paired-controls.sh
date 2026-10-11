@@ -10,9 +10,10 @@ TARGETS=(
   agc_driver_flat_apertures_tests
   agc_driver_image_plane_address_on_line_tests
   agc_masked_select_tests
+  agc_driver_subvector_loop_tests
 )
-TEST_REGEX='^(agc_driver_depth_fast_clear_submit|agc_driver_flat_apertures_0|agc_driver_image_plane_address_on_line_implicit_lod|agc_driver_image_plane_address_on_line|agc_masked_select)$'
-EXPECTED_TESTS=(agc_driver_depth_fast_clear_submit agc_driver_flat_apertures_0 agc_driver_image_plane_address_on_line_implicit_lod agc_driver_image_plane_address_on_line agc_masked_select)
+TEST_REGEX='^(agc_driver_depth_fast_clear_submit|agc_driver_flat_apertures_(0|1|2|3|4|5|6|7|8|9|10|11|12|13)|agc_driver_image_plane_address_on_line_implicit_lod|agc_driver_image_plane_address_on_line|agc_masked_select|agc_driver_subvector_loop)$'
+EXPECTED_TESTS=(agc_driver_depth_fast_clear_submit agc_driver_flat_apertures_0 agc_driver_flat_apertures_1 agc_driver_flat_apertures_2 agc_driver_flat_apertures_3 agc_driver_flat_apertures_4 agc_driver_flat_apertures_5 agc_driver_flat_apertures_6 agc_driver_flat_apertures_7 agc_driver_flat_apertures_8 agc_driver_flat_apertures_9 agc_driver_flat_apertures_10 agc_driver_flat_apertures_11 agc_driver_flat_apertures_12 agc_driver_flat_apertures_13 agc_driver_image_plane_address_on_line_implicit_lod agc_driver_image_plane_address_on_line agc_masked_select agc_driver_subvector_loop)
 overall=0
 mkdir -p "$ROOT/evidence"
 printf 'run_id=%s\nattempt=%s\nbase_sha=%s\ncandidate_sha=%s\nrunner=%s\n' \
@@ -95,7 +96,7 @@ PY
   printf 'registration_pairing_exit=%s\n' "$registration_pairing_rc" >> "$out/status.txt"
   if [[ "$registration_pairing_rc" -ne 0 ]]; then overall=1; return; fi
 
-  timeout --signal=TERM --kill-after=10s 35m ctest --test-dir "$build" -R "$TEST_REGEX" --no-tests=error --output-on-failure \
+  timeout --signal=TERM --kill-after=10s 45m ctest --test-dir "$build" -R "$TEST_REGEX" --no-tests=error --output-on-failure \
     --timeout 120 --repeat until-fail:3 --parallel 1 \
     --output-log "$out/ctest.log" --output-junit "$out/ctest.xml" > "$out/ctest-console.log" 2>&1
   ctest_rc=$?
