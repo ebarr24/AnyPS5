@@ -357,15 +357,47 @@ struct ImplicationKeyHash {
 
 class Implications {
 public:
-    Implications(const std::vector<Region>& regions, const BlockSet& uniform, std::uint32_t waveSize, std::size_t& work) : regions(regions), uniform(uniform), waveSize(waveSize), work(work) {}
+    Implications(const std::vector<Region>& regions, const BlockSet& uniform, std::uint32_t waveSize, std::size_t& work, std::size_t retainedLimit)
+        : regions(regions), uniform(uniform), waveSize(waveSize), work(work), retainedLimit(retainedLimit) {}
 
     void Reset(const IrValue* writeMask, bool acrossLoops) {
+        if (mask != writeMask || loops != acrossLoops) retained.clear();
         mask = writeMask;
         loops = acrossLoops;
         always = alwaysTrue(writeMask, waveSize);
         results.clear();
         proven.clear();
+        completed.clear();
         assumptionReads = 0;
+        cutoff = false;
+    }
+
+    void MarkWorkCutoff() { cutoff = true; }
+    void Invalidate() {
+        retained.clear();
+        results.clear();
+        proven.clear();
+        completed.clear();
+        mask = nullptr;
+        loops = false;
+        always = false;
+        assumptionReads = 0;
+        cutoff = false;
+    }
+
+    void FinishWalk(bool successful) {
+        if (successful || cutoff || assumptionReads != 0u) {
+            retained.clear();
+            return;
+        }
+        if (completed.size() > retainedLimit - std::min(retainedLimit, retained.size())) {
+            retained.clear();
+            return;
+        }
+        for (const ImplicationKey& key : completed) {
+            const auto result = results.find(key);
+            if (result != results.end() && result->second != Proof::Assumed) retained.emplace(key, result->second);
+        }
     }
 
     bool Implies(const IrValue* condition, std::uint32_t depth = 0) {
@@ -374,8 +406,8 @@ public:
         if (condition->HasImmediate()) return condition->Type() == IrType::Bool && !condition->ImmediateBool();
         const ImplicationKey key{condition, nullptr};
         if (const auto known = lookup(key)) return *known;
-        if (depth > ImplicationDepthLimit || work == 0) return false;
-        --work;
+        if (depth > ImplicationDepthLimit || work == 0) { cutoff = true; return false; }
+        if (--work == 0u) cutoff = true;
         const Attempt attempt = assume(key);
         bool result = false;
         if (withinQuadsOf(condition, mask, waveSize, uniform)) {
@@ -405,9 +437,13 @@ private:
 
     std::optional<bool> lookup(const ImplicationKey& key) {
         const auto known = results.find(key);
-        if (known == results.end()) return std::nullopt;
-        if (known->second == Proof::Assumed) ++assumptionReads;
-        return known->second != Proof::NotImplied;
+        if (known != results.end()) {
+            if (known->second == Proof::Assumed) ++assumptionReads;
+            return known->second != Proof::NotImplied;
+        }
+        const auto old = retained.find(key);
+        if (old == retained.end()) return std::nullopt;
+        return old->second != Proof::NotImplied;
     }
 
     Attempt assume(const ImplicationKey& key) {
@@ -422,6 +458,7 @@ private:
         }
         results[key] = implied ? Proof::Implied : Proof::NotImplied;
         if (implied) proven.push_back(key);
+        completed.push_back(key);
         return implied;
     }
 
@@ -445,8 +482,8 @@ private:
         if (isImmediate(low, 0u) && (waveSize == 32u || isImmediate(high, 0u))) return true;
         const ImplicationKey key{low, high};
         if (const auto known = lookup(key)) return *known;
-        if (depth > ImplicationDepthLimit || work == 0) return false;
-        --work;
+        if (depth > ImplicationDepthLimit || work == 0) { cutoff = true; return false; }
+        if (--work == 0u) cutoff = true;
         const Attempt attempt = assume(key);
         bool result = false;
         if (low->Opcode() == IrOpcode::CompositeExtractU32x4 && isImmediate(low->Argument(1)->Resolve(), 0u)) {
@@ -479,12 +516,16 @@ private:
     const BlockSet& uniform;
     std::uint32_t waveSize;
     std::size_t& work;
+    std::size_t retainedLimit;
     const IrValue* mask = nullptr;
     bool loops = false;
     bool always = false;
     std::unordered_map<ImplicationKey, Proof, ImplicationKeyHash> results;
+    std::unordered_map<ImplicationKey, Proof, ImplicationKeyHash> retained;
     std::vector<ImplicationKey> proven;
+    std::vector<ImplicationKey> completed;
     std::size_t assumptionReads = 0;
+    bool cutoff = false;
 };
 
 std::vector<Region> blockRegions(const IrProgram& program) {
@@ -537,7 +578,9 @@ std::size_t walkLimit(const IrProgram& program) {
 
 class MaskedLaneWalk {
 public:
-    MaskedLaneWalk(const IrProgram& program, const std::vector<Region>& regions) : program(program), regions(regions), uniform(uniformEntryBlocks(program)), limit(walkLimit(program)), implications(regions, uniform, program.WaveSize(), work) {}
+    MaskedLaneWalk(const IrProgram& program, const std::vector<Region>& regions)
+        : program(program), regions(regions), uniform(uniformEntryBlocks(program)), limit(walkLimit(program)),
+          implications(regions, uniform, program.WaveSize(), work, limit) {}
 
     bool UnobservedWhereMasked(const IrValue& select, const IrValue* mask) {
         const bool acrossLoops = mask->HasImmediate() || regionOf(regions, mask->Parent()) == Region::Once;
@@ -553,20 +596,26 @@ public:
             pending.pop_back();
             for (const IrUse& use : value->OperandUses()) {
                 const IrValue* user = use.user;
-                if (!followable(regions, user->Parent(), acrossLoops)) return false;
+                if (!followable(regions, user->Parent(), acrossLoops)) { implications.FinishWalk(false); return false; }
                 if (isSelect(user->Opcode()) && use.operand == 1u && implications.Implies(user->Argument(0))) continue;
                 if (user->Opcode() == IrOpcode::LogicalAnd && use.operand < 2u && implications.Implies(user->Argument(1u - use.operand))) continue;
                 if (readsOnlyWhereActive(user->Opcode()) && use.operand + 1u < user->ArgumentCount() && implications.Implies(user->Argument(user->ArgumentCount() - 1u))) continue;
-                if (!user->IsPhi() && !isLaneLocal(user->Opcode()) && !isExplicitLodSample(program, *user) && !(quadMasked && user->Opcode() == IrOpcode::ImageSampleRaw)) return false;
+                if (!user->IsPhi() && !isLaneLocal(user->Opcode()) && !isExplicitLodSample(program, *user) && !(quadMasked && user->Opcode() == IrOpcode::ImageSampleRaw)) {
+                    implications.FinishWalk(false);
+                    return false;
+                }
                 if (firstVisit(*user)) {
-                    if (work == 0) return false;
-                    --work;
+                    if (work == 0) { implications.MarkWorkCutoff(); implications.FinishWalk(false); return false; }
+                    if (--work == 0u) implications.MarkWorkCutoff();
                     pending.push_back(user);
                 }
             }
         }
+        implications.FinishWalk(true);
         return true;
     }
+
+    void Invalidate() { implications.Invalidate(); }
 
 private:
     void startVisits() {
@@ -617,6 +666,7 @@ MaskedSelectEliminationStats MaskedSelectEliminator::Eliminate(IrProgram& progra
                 inst->Invalidate();
                 inst->SetParent(nullptr);
                 it = instructions.erase(it);
+                walk.Invalidate();
                 ++stats.removedSelects;
                 changed = true;
             }

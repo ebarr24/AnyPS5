@@ -1,13 +1,51 @@
 #include "IntermediateRepresentation/IrProgram.hpp"
 #include "Optimization/MaskedSelectEliminator.hpp"
 #include "RdnaDecoder/RdnaInstruction.hpp"
+#include <array>
+#include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <exception>
 #include <functional>
 #include <initializer_list>
+#include <new>
 #include <utility>
+#include <vector>
+
+namespace {
+
+thread_local bool countAllocations = false;
+thread_local std::size_t countedAllocations = 0;
+
+}
+
+void* operator new(std::size_t size) {
+    if (countAllocations) ++countedAllocations;
+    if (void* allocation = std::malloc(size == 0u ? 1u : size)) return allocation;
+    throw std::bad_alloc{};
+}
+
+void* operator new[](std::size_t size) {
+    return ::operator new(size);
+}
+
+void operator delete(void* allocation) noexcept {
+    std::free(allocation);
+}
+
+void operator delete[](void* allocation) noexcept {
+    ::operator delete(allocation);
+}
+
+void operator delete(void* allocation, std::size_t) noexcept {
+    ::operator delete(allocation);
+}
+
+void operator delete[](void* allocation, std::size_t) noexcept {
+    ::operator delete(allocation);
+}
 
 using namespace ShaderRecompiler;
 
@@ -63,6 +101,10 @@ struct Builder {
         return emit(IrOpcode::IAdd32, IrType::U32, {&value, &constant(immediate)});
     }
 
+    IrValue& add(IrValue& left, IrValue& right) {
+        return emit(IrOpcode::IAdd32, IrType::U32, {&left, &right});
+    }
+
     IrValue& logicalAnd(IrValue& left, IrValue& right) {
         return emit(IrOpcode::LogicalAnd, IrType::Bool, {&left, &right});
     }
@@ -106,6 +148,23 @@ struct Builder {
     std::uint32_t eliminate() {
         return MaskedSelectEliminator{}.Eliminate(program).removedSelects;
     }
+
+};
+
+struct AllocationObservation {
+    AllocationObservation() {
+        countedAllocations = 0;
+        countAllocations = true;
+    }
+
+    ~AllocationObservation() {
+        countAllocations = false;
+    }
+
+    std::size_t Stop() {
+        countAllocations = false;
+        return countedAllocations;
+    }
 };
 
 bool removed(const IrValue& value) {
@@ -124,6 +183,18 @@ bool run(const char* name, const std::function<bool()>& test) {
         std::fprintf(stderr, "%s: %s\n", name, error.what());
         return false;
     }
+}
+
+IrValue& andTree(Builder& builder, const std::vector<IrValue*>& terms, std::size_t first, std::size_t last) {
+    if (last - first == 1u) return *terms[first];
+    const std::size_t middle = first + (last - first) / 2u;
+    return builder.logicalAnd(andTree(builder, terms, first, middle), andTree(builder, terms, middle, last));
+}
+
+IrValue& andWordTree(Builder& builder, const std::vector<IrValue*>& terms, std::size_t first, std::size_t last) {
+    if (last - first == 1u) return *terms[first];
+    const std::size_t middle = first + (last - first) / 2u;
+    return builder.emit(IrOpcode::BitwiseAnd32, IrType::U32, {&andWordTree(builder, terms, first, middle), &andWordTree(builder, terms, middle, last)});
 }
 
 }
@@ -150,6 +221,158 @@ int main() {
         auto& next = b.select(wide, b.add(written, 2u), old);
         b.keep(next);
         return b.eliminate() == 0u && !removed(written);
+    });
+
+    passed &= run("repeated failed walks reuse one bounded implication DAG without changing IR", [] {
+        Builder b;
+        auto& writeMask = b.mask(16u);
+        std::vector<IrValue*> terms;
+        for (std::uint32_t index = 0; index < 16u; ++index) {
+            terms.push_back(&b.emit(IrOpcode::INotEqual32, IrType::Bool, {&b.lane(), &b.constant(index + 1u)}));
+        }
+        auto& active = andTree(b, terms, 0u, terms.size());
+        std::array<IrValue*, 8> selects{};
+        for (std::uint32_t index = 0; index < selects.size(); ++index) {
+            selects[index] = &b.select(writeMask, b.add(b.lane(), index + 1u), b.lane());
+        }
+        std::array<IrValue*, 4> data{};
+        for (std::size_t index = 0; index < data.size(); ++index) data[index] = &b.add(*selects[index * 2u], *selects[index * 2u + 1u]);
+        auto& pixels = b.emit(IrOpcode::CompositeConstructU32x4, IrType::U32x4, {data[0], data[1], data[2], data[3]});
+        auto& sink = b.emit(IrOpcode::SetAttribute, IrType::Void, {&pixels, &active});
+        AllocationObservation observation;
+        const auto removedSelects = b.eliminate();
+        const auto allocations = observation.Stop();
+        std::fprintf(stderr, "same-context Eliminate allocations: %llu\n", static_cast<unsigned long long>(allocations));
+        bool allRetained = true;
+        for (const IrValue* select : selects) allRetained &= select->Parent() != nullptr;
+        return removedSelects == 0u && allocations < 160u && allRetained && sink.Parent() != nullptr;
+    });
+
+    passed &= run("repeated wave64 word-pair failures reuse their implication DAG", [] {
+        Builder b;
+        auto& writeMask = b.mask(16u);
+        std::vector<IrValue*> lowTerms;
+        std::vector<IrValue*> highTerms;
+        for (std::uint32_t index = 0; index < 4u; ++index) {
+            lowTerms.push_back(&b.add(b.lane(), index + 1u));
+            highTerms.push_back(&b.add(b.lane(), index + 101u));
+        }
+        auto& active = b.threadBit(andWordTree(b, lowTerms, 0u, lowTerms.size()), andWordTree(b, highTerms, 0u, highTerms.size()));
+        std::array<IrValue*, 8> selects{};
+        for (std::uint32_t index = 0; index < selects.size(); ++index) selects[index] = &b.select(writeMask, b.add(b.lane(), index + 1u), b.lane());
+        auto& pixels = b.emit(IrOpcode::CompositeConstructU32x4, IrType::U32x4, {selects[0], selects[1], selects[2], selects[3]});
+        auto& otherPixels = b.emit(IrOpcode::CompositeConstructU32x4, IrType::U32x4, {selects[4], selects[5], selects[6], selects[7]});
+        b.emit(IrOpcode::SetAttribute, IrType::Void, {&pixels, &active});
+        b.emit(IrOpcode::SetAttribute, IrType::Void, {&otherPixels, &active});
+        AllocationObservation observation;
+        const auto removedSelects = b.eliminate();
+        const auto allocations = observation.Stop();
+        std::fprintf(stderr, "wave64 pair Eliminate allocations: %llu\n", static_cast<unsigned long long>(allocations));
+        bool allRetained = true;
+        for (const IrValue* select : selects) allRetained &= select->Parent() != nullptr;
+        return removedSelects == 0u && allocations < 120u && allRetained;
+    });
+
+    passed &= run("a changed write mask cannot reuse another mask's negative proof", [] {
+        Builder b;
+        auto& narrow = b.mask(16u);
+        auto& wide = b.mask(32u);
+        auto& unrelated = b.emit(IrOpcode::INotEqual32, IrType::Bool, {&b.lane(), &b.constant(101u)});
+        auto& active = b.logicalAnd(wide, unrelated);
+        auto& wideSelect = b.select(wide, b.add(b.lane(), 1u), b.lane());
+        auto& narrowSelect = b.select(narrow, b.add(b.lane(), 2u), b.lane());
+        auto& data = b.emit(IrOpcode::CompositeConstructU32x4, IrType::U32x4, {&narrowSelect, &wideSelect, &b.constant(0u), &b.constant(0u)});
+        b.emit(IrOpcode::SetAttribute, IrType::Void, {&data, &active});
+        const auto removedSelects = b.eliminate();
+        return removedSelects == 1u && narrowSelect.Parent() != nullptr && removed(wideSelect);
+    });
+
+    passed &= run("a successful select rewrite clears proof reuse before DCE", [] {
+        Builder b;
+        auto& writeMask = b.mask(16u);
+        auto& unrelated = b.emit(IrOpcode::INotEqual32, IrType::Bool, {&b.lane(), &b.constant(103u)});
+        auto& active = b.logicalAnd(writeMask, unrelated);
+        auto& first = b.select(writeMask, b.add(b.lane(), 1u), b.lane());
+        auto& second = b.select(writeMask, b.add(b.lane(), 2u), b.lane());
+        auto& data = b.emit(IrOpcode::CompositeConstructU32x4, IrType::U32x4, {&first, &second, &b.constant(0u), &b.constant(0u)});
+        b.emit(IrOpcode::SetAttribute, IrType::Void, {&data, &active});
+        const auto removedSelects = b.eliminate();
+        return removedSelects == 2u && removed(first) && removed(second);
+    });
+
+    passed &= run("cycle-dependent implications are recomputed between failed walks", [] {
+        Builder b;
+        auto& writeMask = b.mask(16u);
+        IrBlock& entry = *b.block;
+        IrBlock& header = b.newBlock();
+        IrBlock& body = b.newBlock();
+        IrBlock& exit = b.newBlock();
+        entry.AddBranch(&header);
+        header.AddBranch(&body);
+        header.AddBranch(&exit);
+        body.AddBranch(&header);
+        auto& active = b.program.CreateValue(IrOpcode::Phi, IrType::Bool);
+        header.AppendInstruction(&active);
+        active.AddPhiOperand(&entry, &writeMask);
+        b.block = &body;
+        auto& carried = b.logicalAnd(active, writeMask);
+        active.AddPhiOperand(&body, &carried);
+        b.block = &exit;
+        auto& first = b.select(writeMask, b.add(b.lane(), 1u), b.lane());
+        auto& second = b.select(writeMask, b.add(b.lane(), 2u), b.lane());
+        for (IrValue* select : {&first, &second}) {
+            auto& compared = b.emit(IrOpcode::INotEqual32, IrType::Bool, {select, &b.constant(0u)});
+            auto& ballot = b.emit(IrOpcode::Ballot, IrType::U32x4, {&compared});
+            b.keep(b.emit(IrOpcode::CompositeExtractU32x4, IrType::U32, {&ballot, &b.constant(0u)}));
+        }
+        auto& data = b.emit(IrOpcode::CompositeConstructU32x4, IrType::U32x4, {&first, &second, &b.constant(0u), &b.constant(0u)});
+        b.emit(IrOpcode::SetAttribute, IrType::Void, {&data, &active});
+        const auto removedSelects = b.eliminate();
+        return removedSelects == 0u && first.Parent() != nullptr && second.Parent() != nullptr;
+    });
+
+    passed &= run("depth cutoffs do not become retained negative proofs", [] {
+        Builder b;
+        auto& writeMask = b.mask(16u);
+        std::vector<IrValue*> terms;
+        for (std::uint32_t index = 0; index < 80u; ++index) {
+            terms.push_back(&b.emit(IrOpcode::INotEqual32, IrType::Bool, {&b.lane(), &b.constant(index + 201u)}));
+        }
+        IrValue* active = terms.front();
+        for (std::size_t index = 1u; index < terms.size(); ++index) active = &b.logicalAnd(*active, *terms[index]);
+        auto& first = b.select(writeMask, b.add(b.lane(), 1u), b.lane());
+        auto& second = b.select(writeMask, b.add(b.lane(), 2u), b.lane());
+        auto& data = b.emit(IrOpcode::CompositeConstructU32x4, IrType::U32x4, {&first, &second, &b.constant(0u), &b.constant(0u)});
+        b.emit(IrOpcode::SetAttribute, IrType::Void, {&data, active});
+        const auto removedSelects = b.eliminate();
+        return removedSelects == 0u && first.Parent() != nullptr && second.Parent() != nullptr;
+    });
+
+    passed &= run("work-budget cutoffs discard partial implication results", [] {
+        Builder b;
+        auto& writeMask = b.mask(16u);
+        std::vector<IrValue*> lowTerms;
+        std::vector<IrValue*> highTerms;
+        for (std::uint32_t index = 0; index < 128u; ++index) {
+            lowTerms.push_back(&b.constant(index + 1u));
+            highTerms.push_back(&b.constant(index + 257u));
+        }
+        auto& low = andWordTree(b, lowTerms, 0u, lowTerms.size());
+        auto& high = andWordTree(b, highTerms, 0u, highTerms.size());
+        auto& active = b.threadBit(low, high);
+        std::array<IrValue*, 4> selects{};
+        for (std::uint32_t index = 0; index < selects.size(); ++index) {
+            selects[index] = &b.select(writeMask, b.add(b.lane(), index + 1u), b.lane());
+        }
+        auto& pixels = b.emit(IrOpcode::CompositeConstructU32x4, IrType::U32x4, {selects[0], selects[1], selects[2], selects[3]});
+        b.emit(IrOpcode::SetAttribute, IrType::Void, {&pixels, &active});
+        AllocationObservation observation;
+        const auto removedSelects = b.eliminate();
+        const auto allocations = observation.Stop();
+        std::fprintf(stderr, "budget-cutoff Eliminate allocations: %llu\n", static_cast<unsigned long long>(allocations));
+        bool allRetained = true;
+        for (const IrValue* select : selects) allRetained &= select->Parent() != nullptr;
+        return removedSelects == 0u && allocations > 16000u && allRetained;
     });
 
     passed &= run("a write read under a narrower exec must lose its select", [] {
@@ -607,6 +830,62 @@ int main() {
         auto& wqm = b.emit(IrOpcode::WqmU64, IrType::U64, {&b.emit(IrOpcode::CompositeConstructU64, IrType::U64, {&low, &high})});
         return b.threadBit(b.emit(IrOpcode::CompositeExtractU64, IrType::U32, {&wqm, &b.constant(0u)}), b.emit(IrOpcode::CompositeExtractU64, IrType::U32, {&wqm, &b.constant(1u)}));
     };
+
+    const auto wqmOnlyRead = [&](bool outsideUniformPrefix, bool outsideSubset) {
+        Builder b;
+        b.program.Resources().stage = IrShaderStage::Pixel;
+        if (outsideUniformPrefix) {
+            IrBlock& entry = *b.block;
+            IrBlock& body = b.newBlock();
+            IrBlock& exit = b.newBlock();
+            entry.AddBranch(&body);
+            entry.AddBranch(&exit);
+            body.AddBranch(&exit);
+            b.block = &body;
+        }
+        auto& live = b.mask(16u);
+        auto& quads = wholeQuads(b, live);
+        IrValue& active = outsideSubset
+            ? b.logicalAnd(b.mask(32u), b.emit(IrOpcode::INotEqual32, IrType::Bool, {&b.lane(), &b.constant(101u)}))
+            : b.logicalAnd(live, b.mask(8u));
+        auto& old = b.lane();
+        auto& written = b.select(quads, b.add(old, 1u), old);
+        auto& next = b.select(active, b.add(written, 2u), old);
+        b.keep(next);
+        const auto removedSelects = b.eliminate();
+        return std::pair{removedSelects, removed(written)};
+    };
+
+    passed &= run("whole-quad implication keeps uniform-entry scope and active-subset limits", [&] {
+        const auto recognized = wqmOnlyRead(false, false);
+        const auto outsideUniform = wqmOnlyRead(true, false);
+        const auto outsideSubset = wqmOnlyRead(false, true);
+        return recognized.first == 1u && recognized.second && outsideUniform.first == 0u && !outsideUniform.second && outsideSubset.first == 0u && !outsideSubset.second;
+    });
+
+    passed &= run("repeated failed walks reuse uniform-entry WQM facts without dropping cross-lane selects", [&] {
+        Builder b;
+        b.program.Resources().stage = IrShaderStage::Pixel;
+        auto& live = b.mask(16u);
+        auto& quads = wholeQuads(b, live);
+        auto& active = b.logicalAnd(live, b.mask(8u));
+        std::array<IrValue*, 8> selects{};
+        for (std::uint32_t index = 0; index < selects.size(); ++index) {
+            auto& old = b.lane();
+            selects[index] = &b.select(quads, b.add(old, index + 1u), old);
+            auto& guarded = b.select(active, b.add(*selects[index], index + 17u), old);
+            b.keep(guarded);
+            auto& compare = b.emit(IrOpcode::INotEqual32, IrType::Bool, {selects[index], &b.constant(0u)});
+            b.keep(b.ballotBit(compare));
+        }
+        AllocationObservation observation;
+        const auto removedSelects = b.eliminate();
+        const auto allocations = observation.Stop();
+        std::fprintf(stderr, "WQM uniform-entry failed-walk Eliminate allocations: %llu\n", static_cast<unsigned long long>(allocations));
+        bool allRetained = true;
+        for (const IrValue* select : selects) allRetained &= select->Parent() != nullptr;
+        return removedSelects == 0u && allRetained && allocations < 512u;
+    });
 
     const auto sample = [&](IrShaderStage stage, std::uint32_t sampleFlags, IrOpcode opcode = IrOpcode::ImageSampleRaw, bool wholeQuadExec = false) {
         Builder b;
