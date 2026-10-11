@@ -78,12 +78,30 @@ jobs:
       - name: Run cmake --build build --target libs
         run: cmake --build build --target libs
       - name: Run ctest --test-dir build --output-on-failure --timeout 120 --repeat until-fail:3 --parallel 4 --output-log ctest.log
-        run: ctest --test-dir build --output-on-failure --timeout 120 --repeat until-fail:3 --parallel 4 --output-log ctest.log --output-junit ctest.xml
+        run: ctest --test-dir build --output-on-failure --timeout 120 --repeat until-fail:3 --parallel 4 --output-log "$GITHUB_WORKSPACE/build/ctest.log" --output-junit "$GITHUB_WORKSPACE/build/ctest.xml"
         env:
           ANYPS5_REQUIRE_VULKAN: 1
           GALLIUM_OVERRIDE_CPU_CAPS: avx
       - name: Check skipped tests
-        run: python3 tools/check_skips.py build/ctest.xml
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          if [ ! -f build/ctest.xml ]; then
+            echo "::error::CTest did not produce build/ctest.xml; skip accounting is unavailable"
+            exit 1
+          fi
+          python3 tools/check_skips.py build/ctest.xml
+      - name: Preserve CTest diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-ctest-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/ctest.xml
+            build/ctest.log
+            build/Testing/Temporary/LastTest.log
+          if-no-files-found: error
+          retention-days: 7
       - name: Report tests slower than 30 s
         if: ${{ !cancelled() }}
         shell: bash
