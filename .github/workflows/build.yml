@@ -17,14 +17,15 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
-      pull-requests: read
     outputs:
-      sha: ${{ steps.gate.outputs.sha }}
+      base_sha: ${{ steps.gate.outputs.base_sha }}
+      candidate_sha: ${{ steps.gate.outputs.candidate_sha }}
     steps:
       - uses: actions/github-script@v8
         id: gate
         env:
-          CANDIDATE_SHA: 47b3f610c31d6d4862bd0553465118beb256e81a
+          BASE_SHA: ca4ab0d5d66f3855991fa95eec6e7e15e34e24c6
+          CANDIDATE_SHA: 36c779efd2ce7636e790680336ed2ffd2930b1ff
           PR_SCHEMA_INPUT: ${{ inputs.pr }}
           TRIGGERING_ACTOR: ${{ github.triggering_actor }}
         with:
@@ -39,55 +40,90 @@ jobs:
                 throw new Error('Only collaborators with write access can start or rerun builds');
               }
             }
+            const { data: base } = await github.rest.repos.getCommit({ owner, repo, ref: process.env.BASE_SHA });
             const { data: candidate } = await github.rest.repos.getCommit({ owner, repo, ref: process.env.CANDIDATE_SHA });
-            if (candidate.sha !== process.env.CANDIDATE_SHA) {
-              throw new Error('Pinned candidate commit is unavailable or does not match');
+            if (base.sha !== process.env.BASE_SHA || candidate.sha !== process.env.CANDIDATE_SHA) {
+              throw new Error('A pinned base/candidate commit is unavailable or does not match');
             }
-            core.setOutput('sha', candidate.sha);
+            const { data: comparison } = await github.rest.repos.compareCommitsWithBasehead({
+              owner, repo, basehead: `${base.sha}...${candidate.sha}`
+            });
+            if (comparison.status !== 'ahead' || comparison.merge_base_commit?.sha !== base.sha || comparison.ahead_by > 8) {
+              throw new Error('The exact candidate is not a bounded descendant of the pinned base');
+            }
+            core.setOutput('base_sha', base.sha);
+            core.setOutput('candidate_sha', candidate.sha);
             core.info('The required PR workflow input was used only for schema compatibility; no pull request was queried or merged.');
-            await core.summary.addRaw(`Validating exact candidate ${candidate.sha}; PR input is schema-only.`).write();
+            await core.summary.addRaw(`Diagnostic-only paired controls: base ${base.sha}; candidate ${candidate.sha}. The PR input is schema-only.`).write();
 
-  linux:
+  paired-linux:
     needs: eligibility
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 360
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ needs.eligibility.outputs.sha }}
+          ref: ${{ github.sha }}
+          path: driver
           persist-credentials: false
-          submodules: true
+          submodules: false
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.eligibility.outputs.base_sha }}
+          path: base-source
+          persist-credentials: false
+          submodules: recursive
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.eligibility.outputs.candidate_sha }}
+          path: candidate-source
+          persist-credentials: false
+          submodules: recursive
       - uses: hendrikmuhs/ccache-action@v1.2.24
         with:
-          key: linux
+          key: linux-paired-controls
           save: false
           evict-old-files: job
-      - name: Install lavapipe for the GPU execution tests
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers
-      - name: Run cmake -S . -B build $CONFIGURE -DANYPS5_ENABLE_SPIRV_TOOLS=ON
+      - name: Record paired diagnostic identities
+        run: |
+          mkdir -p evidence
+          printf 'run_id=%s\nattempt=%s\ndriver_sha=%s\nbase_sha=%s\ncandidate_sha=%s\n' \
+            "${{ github.run_id }}" "${{ github.run_attempt }}" "${{ github.sha }}" \
+            "${{ needs.eligibility.outputs.base_sha }}" "${{ needs.eligibility.outputs.candidate_sha }}" \
+            > evidence/identity.txt
+          uname -a >> evidence/identity.txt
+      - name: Install lavapipe for shader execution
+        run: timeout --signal=TERM --kill-after=10s 10m sudo apt-get update && timeout --signal=TERM --kill-after=10s 10m sudo apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers
+      - name: Run matched base and candidate diagnostics
         env:
-          CONFIGURE: >-
-            -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
-            -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-        run: cmake -S . -B build $CONFIGURE -DANYPS5_ENABLE_SPIRV_TOOLS=ON
-      - name: Check that every test executable is registered with ctest
-        run: python3 tools/check_test_registration.py build
-      - name: Run cmake --build build
-        run: cmake --build build
-      - name: Run cmake --build build --target libs
-        run: cmake --build build --target libs
-      - name: Run ctest --test-dir build --output-on-failure --timeout 120 --repeat until-fail:3 --parallel 4 --output-log ctest.log
-        run: ctest --test-dir build --output-on-failure --timeout 120 --repeat until-fail:3 --parallel 4 --output-log ctest.log --output-junit ctest.xml
-        env:
+          BASE_SHA: ${{ needs.eligibility.outputs.base_sha }}
+          CANDIDATE_SHA: ${{ needs.eligibility.outputs.candidate_sha }}
           ANYPS5_REQUIRE_VULKAN: 1
           GALLIUM_OVERRIDE_CPU_CAPS: avx
-      - name: Check skipped tests
-        run: python3 tools/check_skips.py build/ctest.xml
-      - name: Report tests slower than 30 s
-        if: ${{ !cancelled() }}
+        run: bash driver/tools/run-paired-controls.sh
+      - name: Report per-test skip reasons and validate skips
+        if: always()
         shell: bash
         run: |
-          [ -f ctest.log ] || exit 0
-          awk '/Test +#[0-9]+: / && $NF == "sec" { for (i = 1; i <= NF; i++) if ($i ~ /^#[0-9]+:$/) name = $(i + 1); t = $(NF - 1) + 0; if (t > max[name]) max[name] = t }
-            END { for (name in max) if (max[name] > 30) printf "::warning title=Slow test::%s took %.1f s on %s; tests must finish in 30 s (CONTRIBUTING.md)\n", name, max[name], ENVIRON["RUNNER_OS"] }' ctest.log
+          set -o pipefail
+          status=0
+          for revision in base candidate; do
+            xml="evidence/${revision}/ctest.xml"
+            report="evidence/${revision}/skip-report.log"
+            mkdir -p "evidence/${revision}"
+            if [ -f "$xml" ]; then
+              python3 driver/tools/check_skips.py "$xml" --list 2>&1 | tee "$report" || status=1
+              python3 driver/tools/check_skips.py "$xml" 2>&1 | tee -a "$report" || status=1
+            else
+              echo "error: ${revision} CTest JUnit output is missing; skip validation cannot pass" | tee "$report"
+              status=1
+            fi
+          done
+          exit "$status"
+      - name: Upload paired diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paired-linux-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
