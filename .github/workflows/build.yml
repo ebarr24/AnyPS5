@@ -77,14 +77,14 @@ jobs:
           ref: ${{ needs.eligibility.outputs.base_sha }}
           path: base-source
           persist-credentials: false
-          submodules: true
+          submodules: recursive
       - uses: actions/checkout@v7
         timeout-minutes: 25
         with:
           ref: ${{ needs.eligibility.outputs.candidate_sha }}
           path: candidate-source
           persist-credentials: false
-          submodules: true
+          submodules: recursive
       - uses: hendrikmuhs/ccache-action@v1.2.24
         timeout-minutes: 5
         with:
