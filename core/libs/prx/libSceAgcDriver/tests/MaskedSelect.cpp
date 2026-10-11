@@ -993,6 +993,34 @@ int main() {
         return true;
     });
 
+    const auto packedHalfRead = [&](std::uint32_t waveSize, IrOpcode opcode, bool outsideSubset) {
+        Builder b;
+        b.program.SetWaveSize(waveSize);
+        b.program.Resources().stage = IrShaderStage::Pixel;
+        auto& live = b.mask(16u);
+        auto& quads = wholeQuads(b, live);
+        IrValue& active = outsideSubset
+            ? b.logicalAnd(b.mask(32u), b.emit(IrOpcode::INotEqual32, IrType::Bool, {&b.lane(), &b.constant(101u)}))
+            : b.logicalAnd(live, b.mask(8u));
+        auto& old = b.lane();
+        auto& written = b.select(quads, b.add(old, 1u), old);
+        auto& packed = b.emit(opcode, IrType::U32, {&written, &b.constant(0x3c003c00u)});
+        b.keep(b.select(active, packed, old));
+        const auto removedSelects = b.eliminate();
+        return std::pair{removedSelects, removed(written)};
+    };
+
+    passed &= run("packed-half lane-local operations preserve same-quad and wider-execution proofs", [&] {
+        for (const IrOpcode opcode : {IrOpcode::FPAdd16x2, IrOpcode::FPMul16x2}) {
+            for (const std::uint32_t waveSize : {32u, 64u}) {
+                const auto recognized = packedHalfRead(waveSize, opcode, false);
+                const auto outsideSubset = packedHalfRead(waveSize, opcode, true);
+                if (recognized.first != 1u || !recognized.second || outsideSubset.first != 0u || outsideSubset.second) return false;
+            }
+        }
+        return true;
+    });
+
     const auto repeatedWqmFailures = [&](std::uint32_t waveSize) {
         Builder b;
         b.program.SetWaveSize(waveSize);
@@ -1006,7 +1034,9 @@ int main() {
             selects[index] = &b.select(quads, b.add(old, index + 1u), old);
             auto& compare = b.emit(IrOpcode::INotEqual32, IrType::Bool, {selects[index], &b.constant(0u)});
             b.keep(b.ballotBit(compare));
-            auto& guarded = b.select(active, b.add(*selects[index], index + 17u), old);
+            const IrOpcode opcode = index % 2u == 0u ? IrOpcode::FPAdd16x2 : IrOpcode::FPMul16x2;
+            auto& packed = b.emit(opcode, IrType::U32, {selects[index], &b.constant(0x3c003c00u)});
+            auto& guarded = b.select(active, packed, old);
             b.keep(guarded);
         }
         AllocationObservation observation;
