@@ -111,7 +111,7 @@ struct Builder {
 
     IrValue& threadBit(IrValue& low, IrValue& high) {
         auto& laneId = lane();
-        auto& word = select(emit(IrOpcode::ULessThan32, IrType::Bool, {&laneId, &constant(32u)}), low, high);
+        auto& word = program.WaveSize() == 32u ? low : select(emit(IrOpcode::ULessThan32, IrType::Bool, {&laneId, &constant(32u)}), low, high);
         auto& shift = emit(IrOpcode::BitwiseAnd32, IrType::U32, {&laneId, &constant(31u)});
         auto& shifted = emit(IrOpcode::ShiftRightLogical32, IrType::U32, {&word, &shift});
         auto& bit = emit(IrOpcode::BitwiseAnd32, IrType::U32, {&shifted, &constant(1u)});
@@ -831,8 +831,9 @@ int main() {
         return b.threadBit(b.emit(IrOpcode::CompositeExtractU64, IrType::U32, {&wqm, &b.constant(0u)}), b.emit(IrOpcode::CompositeExtractU64, IrType::U32, {&wqm, &b.constant(1u)}));
     };
 
-    const auto wqmOnlyRead = [&](bool outsideUniformPrefix, bool outsideSubset) {
+    const auto wqmOnlyRead = [&](std::uint32_t waveSize, bool outsideUniformPrefix, bool outsideSubset) {
         Builder b;
+        b.program.SetWaveSize(waveSize);
         b.program.Resources().stage = IrShaderStage::Pixel;
         if (outsideUniformPrefix) {
             IrBlock& entry = *b.block;
@@ -857,14 +858,18 @@ int main() {
     };
 
     passed &= run("whole-quad implication keeps uniform-entry scope and active-subset limits", [&] {
-        const auto recognized = wqmOnlyRead(false, false);
-        const auto outsideUniform = wqmOnlyRead(true, false);
-        const auto outsideSubset = wqmOnlyRead(false, true);
-        return recognized.first == 1u && recognized.second && outsideUniform.first == 0u && !outsideUniform.second && outsideSubset.first == 0u && !outsideSubset.second;
+        for (const std::uint32_t waveSize : {32u, 64u}) {
+            const auto recognized = wqmOnlyRead(waveSize, false, false);
+            const auto outsideUniform = wqmOnlyRead(waveSize, true, false);
+            const auto outsideSubset = wqmOnlyRead(waveSize, false, true);
+            if (recognized.first != 1u || !recognized.second || outsideUniform.first != 0u || outsideUniform.second || outsideSubset.first != 0u || outsideSubset.second) return false;
+        }
+        return true;
     });
 
-    passed &= run("repeated failed walks reuse uniform-entry WQM facts without dropping cross-lane selects", [&] {
+    const auto repeatedWqmFailures = [&](std::uint32_t waveSize) {
         Builder b;
+        b.program.SetWaveSize(waveSize);
         b.program.Resources().stage = IrShaderStage::Pixel;
         auto& live = b.mask(16u);
         auto& quads = wholeQuads(b, live);
@@ -873,10 +878,10 @@ int main() {
         for (std::uint32_t index = 0; index < selects.size(); ++index) {
             auto& old = b.lane();
             selects[index] = &b.select(quads, b.add(old, index + 1u), old);
-            auto& guarded = b.select(active, b.add(*selects[index], index + 17u), old);
-            b.keep(guarded);
             auto& compare = b.emit(IrOpcode::INotEqual32, IrType::Bool, {selects[index], &b.constant(0u)});
             b.keep(b.ballotBit(compare));
+            auto& guarded = b.select(active, b.add(*selects[index], index + 17u), old);
+            b.keep(guarded);
         }
         AllocationObservation observation;
         const auto removedSelects = b.eliminate();
@@ -885,6 +890,10 @@ int main() {
         bool allRetained = true;
         for (const IrValue* select : selects) allRetained &= select->Parent() != nullptr;
         return removedSelects == 0u && allRetained && allocations < 512u;
+    };
+
+    passed &= run("repeated failed walks reuse uniform-entry WQM facts without dropping cross-lane selects", [&] {
+        return repeatedWqmFailures(32u) && repeatedWqmFailures(64u);
     });
 
     const auto sample = [&](IrShaderStage stage, std::uint32_t sampleFlags, IrOpcode opcode = IrOpcode::ImageSampleRaw, bool wholeQuadExec = false) {
