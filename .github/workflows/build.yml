@@ -18,7 +18,8 @@ concurrency:
 env:
   BASE_SHA: 9aa5fd290007d816bfed6970ee259f9baaa0e24e
   LEGACY_SHA: b758d156dd850da84e166b14f282cbba393d331c
-  CANDIDATE_SHA: a37d76e337e20471959a8182c92e69120fdf1ea3
+  PREVIOUS_SHA: 0186b61026aefd76124ef30b9b07de8a43b3bb05
+  CANDIDATE_SHA: ce5c0c571f5c72de6d21269f6e18c683211ed64e
   CONFIGURE: >-
     -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
     -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
@@ -34,6 +35,7 @@ jobs:
     outputs:
       base: ${{ steps.gate.outputs.base }}
       legacy: ${{ steps.gate.outputs.legacy }}
+      previous: ${{ steps.gate.outputs.previous }}
       candidate: ${{ steps.gate.outputs.candidate }}
     steps:
       - uses: actions/github-script@v8
@@ -63,7 +65,8 @@ jobs:
             const pins = {
               base: '9aa5fd290007d816bfed6970ee259f9baaa0e24e',
               legacy: 'b758d156dd850da84e166b14f282cbba393d331c',
-              candidate: 'a37d76e337e20471959a8182c92e69120fdf1ea3',
+              previous: '0186b61026aefd76124ef30b9b07de8a43b3bb05',
+              candidate: 'ce5c0c571f5c72de6d21269f6e18c683211ed64e',
             };
             for (const [name, sha] of Object.entries(pins)) {
               const { data } = await github.rest.repos.getCommit({ owner, repo, ref: sha });
@@ -110,6 +113,16 @@ jobs:
           persist-credentials: false
           submodules: recursive
 
+      - name: Checkout prior fail-closed candidate 0186
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ needs.eligibility.outputs.previous }}
+          path: source/previous
+          fetch-depth: 0
+          persist-credentials: false
+          submodules: recursive
+
       - name: Checkout exact bounded candidate head
         uses: actions/checkout@v7
         with:
@@ -123,19 +136,22 @@ jobs:
       - name: Capture identities and prove clean checkouts
         run: |
           set -euo pipefail
-          mkdir -p evidence/{base,legacy,head,identity}
+          mkdir -p evidence/{base,legacy,previous,head,identity}
           driver_head="$(git -C driver rev-parse HEAD)"
           test "$driver_head" = "$GITHUB_SHA"
-          printf 'run=%s\nattempt=%s\nworkflowEvent=%s\ndriverHead=%s\nbase=%s\nlegacy=%s\ncandidate=%s\n' \
+          printf 'run=%s\nattempt=%s\nworkflowEvent=%s\ndriverHead=%s\nbase=%s\nlegacy=%s\nprevious=%s\ncandidate=%s\n' \
             "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_EVENT_NAME" "$driver_head" \
             '${{ needs.eligibility.outputs.base }}' '${{ needs.eligibility.outputs.legacy }}' \
+            '${{ needs.eligibility.outputs.previous }}' \
             '${{ needs.eligibility.outputs.candidate }}' > evidence/identity/run.txt
           sha256sum driver/.github/workflows/build.yml driver/.github/host-unwind/legacy-resolver-test-hooks.patch > evidence/identity/driver-inputs.sha256
           test "$(git -C source/base rev-parse HEAD)" = '${{ needs.eligibility.outputs.base }}'
           test "$(git -C source/legacy rev-parse HEAD)" = '${{ needs.eligibility.outputs.legacy }}'
+          test "$(git -C source/previous rev-parse HEAD)" = '${{ needs.eligibility.outputs.previous }}'
           test "$(git -C source/head rev-parse HEAD)" = '${{ needs.eligibility.outputs.candidate }}'
           test -z "$(git -C source/base status --porcelain)"
           test -z "$(git -C source/legacy status --porcelain)"
+          test -z "$(git -C source/previous status --porcelain)"
           test -z "$(git -C source/head status --porcelain)"
           ctest --help | grep -q -- '--test-output-size-passed'
           ctest --help | grep -q -- '--test-output-size-failed'
@@ -154,6 +170,7 @@ jobs:
           set -euo pipefail
           git -C source/base log -1 --format=%H
           git -C source/legacy log -1 --format=%H
+          git -C source/previous log -1 --format=%H
           git -C source/head log -1 --format=%H
           sha256sum driver/.github/host-unwind/legacy-resolver-test-hooks.patch
 
@@ -172,24 +189,35 @@ jobs:
           sed -i 's/ APS5_HOST_UNWIND_TARGET_PAIR_MARKER=1//g' source/legacy/core/libs/prx/libkernel/CMakeLists.txt
           git -C source/legacy apply --unidiff-zero --check "$GITHUB_WORKSPACE/driver/.github/host-unwind/legacy-resolver-test-hooks.patch"
           git -C source/legacy apply --unidiff-zero "$GITHUB_WORKSPACE/driver/.github/host-unwind/legacy-resolver-test-hooks.patch"
+          cp source/head/core/libs/tests/GuestHostCancellation.cpp source/previous/core/libs/tests/GuestHostCancellation.cpp
+          cp source/head/core/libs/prx/libkernel/CMakeLists.txt source/previous/core/libs/prx/libkernel/CMakeLists.txt
+          sed -i 's/ APS5_HOST_UNWIND_TARGET_PAIR_MARKER=1//g' source/previous/core/libs/prx/libkernel/CMakeLists.txt
           test "$(sha256sum source/base/core/libs/tests/GuestHostCancellation.cpp | cut -d' ' -f1)" = "$(sha256sum source/head/core/libs/tests/GuestHostCancellation.cpp | cut -d' ' -f1)"
           test "$(sha256sum source/legacy/core/libs/tests/GuestHostCancellation.cpp | cut -d' ' -f1)" = "$(sha256sum source/head/core/libs/tests/GuestHostCancellation.cpp | cut -d' ' -f1)"
+          test "$(sha256sum source/previous/core/libs/tests/GuestHostCancellation.cpp | cut -d' ' -f1)" = "$(sha256sum source/head/core/libs/tests/GuestHostCancellation.cpp | cut -d' ' -f1)"
           ! grep -q APS5_HOST_UNWIND_TARGET_PAIR_MARKER source/base/core/libs/prx/libkernel/CMakeLists.txt
           ! grep -q APS5_HOST_UNWIND_TARGET_PAIR_MARKER source/legacy/core/libs/prx/libkernel/CMakeLists.txt
+          ! grep -q APS5_HOST_UNWIND_TARGET_PAIR_MARKER source/previous/core/libs/prx/libkernel/CMakeLists.txt
           grep -q APS5_HOST_UNWIND_TARGET_PAIR_MARKER source/head/core/libs/prx/libkernel/CMakeLists.txt
           test "$(git -C source/base status --porcelain | wc -l)" -eq 2
           test "$(git -C source/base status --porcelain | sed 's/^...//' | sort | paste -sd, -)" = "core/libs/prx/libkernel/CMakeLists.txt,core/libs/tests/GuestHostCancellation.cpp"
           test "$(git -C source/legacy status --porcelain | wc -l)" -eq 3
           test "$(git -C source/legacy status --porcelain | sed 's/^...//' | sort | paste -sd, -)" = "core/libs/prx/libc/src/exception/Unwind.cpp,core/libs/prx/libkernel/CMakeLists.txt,core/libs/tests/GuestHostCancellation.cpp"
+          test "$(git -C source/previous status --porcelain | wc -l)" -eq 2
+          test "$(git -C source/previous status --porcelain | sed 's/^...//' | sort | paste -sd, -)" = "core/libs/prx/libkernel/CMakeLists.txt,core/libs/tests/GuestHostCancellation.cpp"
           grep -q 'while ((status = state.state.load(std::memory_order_acquire)) == 1)' source/legacy/core/libs/prx/libc/src/exception/Unwind.cpp
           ! grep -q 'return expected == 2;' source/legacy/core/libs/prx/libc/src/exception/Unwind.cpp
           ! grep -q 'while ((status = state.state.load(std::memory_order_acquire)) == 1)' source/head/core/libs/prx/libc/src/exception/Unwind.cpp
+          grep -q 'nativeHostUnwindResolverTestGate' source/previous/core/libs/prx/libc/src/exception/Unwind.cpp
+          grep -q 'return expected == 2;' source/previous/core/libs/prx/libc/src/exception/Unwind.cpp
           grep -q 'nativeHostUnwindResolverTestContenders' driver/.github/host-unwind/legacy-resolver-test-hooks.patch
           git -C source/base diff --check
           git -C source/legacy diff --check
-          sha256sum evidence/base/libkernel-test-registration.patch source/base/core/libs/tests/GuestHostCancellation.cpp source/head/core/libs/tests/GuestHostCancellation.cpp source/legacy/core/libs/tests/GuestHostCancellation.cpp source/base/core/libs/prx/libkernel/CMakeLists.txt source/head/core/libs/prx/libkernel/CMakeLists.txt source/legacy/core/libs/prx/libkernel/CMakeLists.txt source/legacy/core/libs/prx/libc/src/exception/Unwind.cpp driver/.github/host-unwind/legacy-resolver-test-hooks.patch > evidence/identity/fixture-and-overlay.sha256
+          git -C source/previous diff --check
+          sha256sum evidence/base/libkernel-test-registration.patch source/base/core/libs/tests/GuestHostCancellation.cpp source/head/core/libs/tests/GuestHostCancellation.cpp source/legacy/core/libs/tests/GuestHostCancellation.cpp source/previous/core/libs/tests/GuestHostCancellation.cpp source/base/core/libs/prx/libkernel/CMakeLists.txt source/head/core/libs/prx/libkernel/CMakeLists.txt source/legacy/core/libs/prx/libkernel/CMakeLists.txt source/previous/core/libs/prx/libkernel/CMakeLists.txt source/legacy/core/libs/prx/libc/src/exception/Unwind.cpp source/previous/core/libs/prx/libc/src/exception/Unwind.cpp driver/.github/host-unwind/legacy-resolver-test-hooks.patch > evidence/identity/fixture-and-overlay.sha256
           git -C source/base status --short > evidence/base/overlay-status.txt
           git -C source/legacy status --short > evidence/legacy/overlay-status.txt
+          git -C source/previous status --short > evidence/previous/overlay-status.txt
 
       - name: Configure exact original base
         working-directory: source/base
@@ -232,6 +260,40 @@ jobs:
                   raise SystemExit(f'base cancellation red was not the original signal fault: {name}')
           if any(c.tag.rsplit('}', 1)[-1] == 'skipped' for n in cases for c in n):
               raise SystemExit('base focused result contains a skip')
+          PY
+
+      - name: Configure historical fail-closed candidate 0186
+        working-directory: source/previous
+        run: cmake -S . -B build $CONFIGURE -DANYPS5_ENABLE_SPIRV_TOOLS=ON > ../../evidence/previous/configure.log 2>&1
+
+      - name: Build historical concurrent-cancellation reproduction
+        working-directory: source/previous
+        run: cmake --build build --target guest_host_cancellation_tests --parallel 2 > ../../evidence/previous/build.log 2>&1
+
+      - name: Preserve the real cold contender failure on historical candidate 0186
+        working-directory: source/previous
+        run: |
+          set -euo pipefail
+          set +e
+          ctest --test-dir build --output-on-failure --timeout 20 --test-output-size-passed 1048576 --test-output-size-failed 1048576 -R '^guest_host_concurrent_cold_cancellation$' --output-log "$GITHUB_WORKSPACE/evidence/previous/ctest.log" --output-junit "$GITHUB_WORKSPACE/evidence/previous/ctest.xml" > "$GITHUB_WORKSPACE/evidence/previous/console.log" 2>&1
+          result=$?
+          set -e
+          cp build/Testing/Temporary/LastTest.log "$GITHUB_WORKSPACE/evidence/previous/LastTest.log"
+          printf '%s\n' "$result" > "$GITHUB_WORKSPACE/evidence/previous/ctest.exitcode"
+          test "$result" -ne 0
+          grep -q 'concurrent cancellation: owner and contender EventFlags are parked' "$GITHUB_WORKSPACE/evidence/previous/LastTest.log"
+          grep -q 'concurrent cancellation: resolver gate entered before contender cancel' "$GITHUB_WORKSPACE/evidence/previous/LastTest.log"
+          grep -Eq 'SegFault|SIGSEGV|SIGABRT|Subprocess aborted' "$GITHUB_WORKSPACE/evidence/previous/ctest.log"
+          ! grep -Eq 'uninstrumented concurrent cancellation|resolver test gate unavailable|undefined symbol' "$GITHUB_WORKSPACE/evidence/previous/LastTest.log"
+          python3 - "$GITHUB_WORKSPACE/evidence/previous/ctest.xml" <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          root = ET.parse(sys.argv[1]).getroot()
+          cases = [n for n in root.iter() if n.tag.rsplit('}', 1)[-1] == 'testcase']
+          if len(cases) != 1 or cases[0].get('name') != 'guest_host_concurrent_cold_cancellation':
+              raise SystemExit(f'0186 result set mismatch: {[n.get("name") for n in cases]!r}')
+          tags = [c.tag.rsplit('}', 1)[-1] for c in cases[0]]
+          if not any(t in {'failure', 'error'} for t in tags) or 'skipped' in tags:
+              raise SystemExit(f'0186 did not preserve the expected real cancellation failure: {tags!r}')
           PY
 
       - name: Configure the previous candidate for isolated old-waiter reproduction
