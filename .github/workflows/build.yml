@@ -1,4 +1,4 @@
-name: Private POSIX cancellation probe
+name: Private POSIX cancellation baseline debugger probe
 
 on:
   workflow_dispatch:
@@ -33,7 +33,7 @@ jobs:
               throw new Error('The required historical 3391 workflow input is schema-only and must not select a PR');
             }
             const { owner, repo } = context.repo;
-            if (owner !== 'ebarr24' || repo !== 'AnyPS5' || context.ref !== 'refs/heads/phase-observer-cancel-probe-r2') {
+            if (owner !== 'ebarr24' || repo !== 'AnyPS5' || context.ref !== 'refs/heads/phase-observer-cancel-debug-r6') {
               throw new Error('Dispatch is restricted to the isolated ebarr24/AnyPS5 diagnostic branch');
             }
             const { data: repository } = await github.rest.repos.get({ owner, repo });
@@ -102,7 +102,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p evidence/base414 evidence/candidate2e59 evidence/cells/base414-trace-off evidence/cells/candidate2e59-trace-off evidence/cells/candidate2e59-trace-on
+          mkdir -p evidence/base414 evidence/candidate2e59 evidence/gdb evidence/cells/base414-trace-off evidence/cells/candidate2e59-trace-off
           driver_head="$(git -C driver rev-parse HEAD)"
           test "$driver_head" = "$GITHUB_SHA"
           printf '%s\n' \
@@ -115,17 +115,27 @@ jobs:
             'original11CaseJob=114678843899' \
             'original11CaseManifestSha256=3DDAED6E82BA51818C2D828484E42269860810B77674DE5737B54792ABBA131B' \
             'original11CaseGate=preserved failed essential gate; supplemental matrix cannot replace it' \
+            'priorCandidateOffRun=38215052475 attempt=1 LinuxJob=114697784879 outcome=SIGSEGV CTestExit=8' \
+            'priorCandidateOffRawZipSha256=551696ef8257ff3ece5364e86c7a48cc23b44808ae30430fa3515757e48dd37b' \
             > evidence/identity.txt
           sha256sum driver/.github/workflows/build.yml driver/.github/diagnostics/cancel-probe/GuestEventFlag.cpp driver/.github/diagnostics/cancel-probe/CMakeLists.cancel-probe.patch > evidence/driver-files.sha256
 
       - uses: hendrikmuhs/ccache-action@v1.2.24
         with:
-          key: private-cancel-probe-r2
+          key: private-cancel-debug-r6
           save: false
           evict-old-files: job
 
-      - name: Install Linux build dependencies
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvulkan1 libpipewire-0.3-dev libpulse-dev libasound2-dev
+      - name: Install Linux build dependencies and GDB
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gdb libvulkan1 libpipewire-0.3-dev libpulse-dev libasound2-dev
+
+      - name: Require and record GDB toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v gdb | tee evidence/gdb/gdb-path.txt
+          gdb --version | tee evidence/gdb/gdb-version.txt
+          dpkg-query -W -f='${Version}\n' gdb | tee evidence/gdb/gdb-package-version.txt
 
       - name: Verify exact source commits and apply the same fixture-only overlay
         shell: bash
@@ -199,7 +209,7 @@ jobs:
           cmake --build build --parallel 2 --target guest_event_flag_cancel_probe_tests 2>&1 | tee "$GITHUB_WORKSPACE/evidence/candidate2e59/build.log"
           grep -E '^CMAKE_(BUILD_TYPE|C_FLAGS_RELEASE|CXX_FLAGS_RELEASE):' build/CMakeCache.txt > "$GITHUB_WORKSPACE/evidence/candidate2e59/cache-flags.txt"
 
-      - name: Run all three natural cells once, serially
+      - name: Reproduce baseline and bounded candidate-off comparison once
         shell: bash
         run: |
           set -u
@@ -252,9 +262,8 @@ jobs:
           }
           run_cell base414-trace-off base414 guest_event_flag_posix_cancel_probe_off
           run_cell candidate2e59-trace-off candidate2e59 guest_event_flag_posix_cancel_probe_off
-          run_cell candidate2e59-trace-on candidate2e59 guest_event_flag_posix_cancel_probe_on
 
-      - name: Enforce exact three-cell accounting and retain failure status
+      - name: Enforce exact two-cell accounting and retain failure status
         if: ${{ always() }}
         shell: bash
         run: |
@@ -264,7 +273,6 @@ jobs:
           expected = {
               'base414-trace-off': 'guest_event_flag_posix_cancel_probe_off',
               'candidate2e59-trace-off': 'guest_event_flag_posix_cancel_probe_off',
-              'candidate2e59-trace-on': 'guest_event_flag_posix_cancel_probe_on',
           }
           problems = []
           actual = sorted(p.name for p in root.iterdir() if p.is_dir()) if root.exists() else []
@@ -305,23 +313,24 @@ jobs:
           sys.exit(1 if problems else 0)
           PY
 
-      - name: At most one bounded symbolized reproduction after natural cells
+      - name: Required bounded symbolized baseline reproduction
         if: ${{ always() }}
         shell: bash
         run: |
+          set -euo pipefail
           python3 - <<'PY' > "$RUNNER_TEMP/gdb-target.json"
           import json, pathlib, subprocess, xml.etree.ElementTree as ET
           cells = [
               ('base414-trace-off', 'base414', 'guest_event_flag_posix_cancel_probe_off'),
               ('candidate2e59-trace-off', 'candidate2e59', 'guest_event_flag_posix_cancel_probe_off'),
-              ('candidate2e59-trace-on', 'candidate2e59', 'guest_event_flag_posix_cancel_probe_on'),
           ]
           expected_ids = {cell for cell, _, _ in cells}
           cells_root = pathlib.Path('evidence/cells')
           observed_ids = {p.name for p in cells_root.iterdir() if p.is_dir()} if cells_root.is_dir() else set()
           if observed_ids != expected_ids:
-              print(json.dumps({'skip': f'exact natural cell directory set required; expected {sorted(expected_ids)}, found {sorted(observed_ids)}'}))
-              raise SystemExit(0)
+              reason = f'exact natural cell directory set required; expected {sorted(expected_ids)}, found {sorted(observed_ids)}'
+              pathlib.Path('evidence/gdb/precondition-error.txt').write_text(reason + '\n')
+              raise SystemExit(reason)
           valid_outcomes = {'passed', 'failed', 'signal', 'signal-or-exception', 'timeout'}
           problems = []
           for cell, _, test in cells:
@@ -388,75 +397,84 @@ jobs:
               except Exception as exc:
                   problems.append(f'{cell}: incomplete or inconsistent natural result: {exc}')
           if problems:
-              print(json.dumps({'skip': 'natural matrix incomplete or malformed; no GDB reproduction: ' + '; '.join(problems)}))
-              raise SystemExit(0)
-          for cell, source, test in cells:
-              out = cells_root / cell
-              code = out / 'ctest.exitcode'
-              if code.read_text().strip() == '0':
-                  continue
-              logs = [out / 'console.log', out / 'ctest.log', out / 'named.stderr']
-              joined = '\n'.join(p.read_text(errors='replace') for p in logs if p.is_file())
-              if any(line.lstrip().startswith(('#0 ', '#1 ', '#2 ', 'Backtrace:')) for line in joined.splitlines()):
-                  print(json.dumps({'skip': f'{cell} already has stack-like output'})); break
-              ctest = subprocess.run(['ctest', '--test-dir', f'source/{source}/build', '--show-only=json-v1'],
-                                     text=True, capture_output=True, check=True)
-              matches = [entry for entry in json.loads(ctest.stdout)['tests'] if entry.get('name') == test]
-              if len(matches) != 1 or not matches[0].get('command'):
-                  print(json.dumps({'skip': f'cannot resolve one exact CTest command for {cell}'})); break
-              entry = matches[0]
-              props = {item['name']: item['value'] for item in entry.get('properties', [])}
-              workdir, environment = props.get('WORKING_DIRECTORY'), props.get('ENVIRONMENT', [])
-              workdir_source = 'WORKING_DIRECTORY property in CTest JSON'
-              if not workdir:
-                  # CTest defaults the test cwd to the binary directory of the CMakeLists
-                  # file that registered it. Resolve that directory from this test's JSON backtrace.
-                  graph = json.loads(ctest.stdout).get('backtraceGraph', {})
-                  nodes, files = graph.get('nodes', []), graph.get('files', [])
-                  source_root = pathlib.Path('source') / source
-                  index, candidates, seen = entry.get('backtrace'), [], set()
-                  while isinstance(index, int) and 0 <= index < len(nodes) and index not in seen:
-                      seen.add(index); node = nodes[index]
-                      file_index = node.get('file')
-                      if isinstance(file_index, int) and 0 <= file_index < len(files):
-                          source_file = pathlib.Path(files[file_index])
-                          if not source_file.is_absolute(): source_file = source_root / source_file
-                          if source_file.name == 'CMakeLists.txt': candidates.append(source_file)
-                      index = node.get('parent')
-                  matching = set()
-                  for candidate in candidates:
-                      try: matching.add(candidate.resolve().relative_to(source_root.resolve()).parent)
-                      except ValueError: pass
-                  if len(matching) == 1:
-                      workdir = str((source_root / 'build' / next(iter(matching))).resolve())
-                      workdir_source = 'CTest JSON backtraceGraph registration directory plus documented CTest default binary-directory rule'
-              if not isinstance(workdir, str) or not workdir:
-                  print(json.dumps({'skip': f'cannot resolve exact CTest working directory from JSON for {cell}'})); break
-              if isinstance(environment, str): environment = [environment]
-              if not isinstance(environment, list) or not all(isinstance(item, str) and '=' in item for item in environment):
-                  print(json.dumps({'skip': f'CTest JSON ENVIRONMENT is not a supported VAR=value list for {cell}'})); break
-              env_mods = props.get('ENVIRONMENT_MODIFICATION', [])
-              if env_mods:
-                  print(json.dumps({'skip': f'CTest JSON has ENVIRONMENT_MODIFICATION; exact replay unsupported for {cell}'})); break
-              print(json.dumps({
-                  'cell': cell, 'source': source, 'test': test, 'command': entry['command'],
-                  'ctestExitCode': int(code.read_text().strip()), 'workingDirectory': workdir,
-                  'environment': environment, 'environmentModification': env_mods,
-                  'workingDirectorySource': workdir_source, 'environmentSource': 'Same workflow job environment as natural CTest, then exact CTest ENVIRONMENT entries.'
-              })); break
-          else: print(json.dumps({'skip': 'all natural cells passed; no failing cell requires GDB'}))
+              reason = 'natural evidence incomplete or malformed: ' + '; '.join(problems)
+              pathlib.Path('evidence/gdb/precondition-error.txt').write_text(reason + '\n')
+              raise SystemExit(reason)
+          cell, source, test = cells[0]
+          out = cells_root / cell
+          code = out / 'ctest.exitcode'
+          outcome = (out / 'outcome.txt').read_text().strip()
+          signal_name = (out / 'signal-name.txt').read_text().strip()
+          result_line = (out / 'result-line.txt').read_text().strip()
+          if code.read_text().strip() != '8' or outcome != 'signal' or signal_name != 'SIGSEGV' or 'SegFault' not in result_line:
+              reason = f'baseline SIGSEGV was not reproduced exactly (exit={code.read_text().strip()}, outcome={outcome}, signal={signal_name})'
+              pathlib.Path('evidence/gdb/precondition-error.txt').write_text(reason + '\n')
+              raise SystemExit(reason)
+          logs = [out / 'console.log', out / 'ctest.log', out / 'named.stderr']
+          joined = '\n'.join(p.read_text(errors='replace') for p in logs if p.is_file())
+          if any(line.lstrip().startswith(('#0 ', '#1 ', '#2 ', 'Backtrace:')) for line in joined.splitlines()):
+              print(json.dumps({'notNeeded': f'{cell} already contains stack-like output'})); raise SystemExit(0)
+          ctest = subprocess.run(['ctest', '--test-dir', f'source/{source}/build', '--show-only=json-v1', '-R', '^' + test + '$'],
+                                 text=True, capture_output=True, check=True)
+          matches = [entry for entry in json.loads(ctest.stdout)['tests'] if entry.get('name') == test]
+          if len(matches) != 1 or not matches[0].get('command'):
+              reason = f'cannot resolve one exact CTest command for {cell}'
+              pathlib.Path('evidence/gdb/precondition-error.txt').write_text(reason + '\n')
+              raise SystemExit(reason)
+          entry = matches[0]
+          props = {item['name']: item['value'] for item in entry.get('properties', [])}
+          workdir, environment = props.get('WORKING_DIRECTORY'), props.get('ENVIRONMENT', [])
+          workdir_source = 'WORKING_DIRECTORY property in CTest JSON'
+          if not workdir:
+              graph = json.loads(ctest.stdout).get('backtraceGraph', {})
+              nodes, files = graph.get('nodes', []), graph.get('files', [])
+              source_root = pathlib.Path('source') / source
+              index, candidates, seen = entry.get('backtrace'), [], set()
+              while isinstance(index, int) and 0 <= index < len(nodes) and index not in seen:
+                  seen.add(index); node = nodes[index]
+                  file_index = node.get('file')
+                  if isinstance(file_index, int) and 0 <= file_index < len(files):
+                      source_file = pathlib.Path(files[file_index])
+                      if not source_file.is_absolute(): source_file = source_root / source_file
+                      if source_file.name == 'CMakeLists.txt': candidates.append(source_file)
+                  index = node.get('parent')
+              matching_dirs = set()
+              for candidate in candidates:
+                  try: matching_dirs.add(candidate.resolve().relative_to(source_root.resolve()).parent)
+                  except ValueError: pass
+              if len(matching_dirs) == 1:
+                  workdir = str((source_root / 'build' / next(iter(matching_dirs))).resolve())
+                  workdir_source = 'CTest JSON backtraceGraph registration directory plus documented CTest default binary-directory rule'
+          if not isinstance(workdir, str) or not workdir:
+              raise SystemExit(f'cannot resolve exact CTest working directory from JSON for {cell}')
+          if isinstance(environment, str): environment = [environment]
+          if not isinstance(environment, list) or not all(isinstance(item, str) and '=' in item for item in environment):
+              raise SystemExit(f'CTest JSON ENVIRONMENT is not a supported VAR=value list for {cell}')
+          env_mods = props.get('ENVIRONMENT_MODIFICATION', [])
+          if env_mods:
+              raise SystemExit(f'CTest JSON has ENVIRONMENT_MODIFICATION; exact replay unsupported for {cell}')
+          pathlib.Path('evidence/gdb/ctest-show-only.json').write_text(ctest.stdout)
+          print(json.dumps({
+              'cell': cell, 'source': source, 'test': test, 'command': entry['command'],
+              'ctestExitCode': int(code.read_text().strip()), 'workingDirectory': workdir,
+              'environment': environment, 'environmentModification': env_mods,
+              'workingDirectorySource': workdir_source, 'environmentSource': 'Same workflow job environment as natural CTest, then exact CTest ENVIRONMENT entries.'
+          }))
           PY
           python3 - <<'PY'
           import hashlib, json, os, pathlib, re, shutil, subprocess, sys
           target = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'] + '/gdb-target.json').read_text())
+          if 'notNeeded' in target:
+              pathlib.Path('evidence/gdb/not-needed.txt').write_text(target['notNeeded'] + '\n'); print(target['notNeeded']); sys.exit(0)
           if 'skip' in target:
-              pathlib.Path('evidence/gdb-skipped.txt').write_text(target['skip'] + '\n'); print(target['skip']); sys.exit(0)
+              raise RuntimeError('Required GDB target precondition failed: ' + target['skip'])
           if not shutil.which('gdb'):
-              pathlib.Path('evidence/gdb-skipped.txt').write_text('GDB is unavailable on the runner; no debugger run performed.\n'); sys.exit(0)
+              raise RuntimeError('Required GDB disappeared after the prerequisite check; refusing a successful skip')
           cell, out = target['cell'], pathlib.Path('evidence/gdb'); out.mkdir(parents=True, exist_ok=True)
           version = subprocess.run(['gdb', '--version'], text=True, capture_output=True, check=True).stdout
           (out / 'gdb-version.txt').write_text(version)
-          stderr_path = pathlib.Path('source') / target['source'] / 'build' / (target['test'] + '.gdb.stderr')
+          stderr_path = pathlib.Path('source') / target['source'] / 'build/core/libs/prx/libkernel' / (target['test'] + '.gdb.stderr')
+          if stderr_path.exists() or stderr_path.is_symlink(): raise RuntimeError(f'GDB stderr path already exists; refusing overwrite: {stderr_path}')
           args = list(target['command']); args[-1] = str(stderr_path.resolve())
           binary = pathlib.Path(args[0])
           context = {
@@ -471,8 +489,10 @@ jobs:
           env = os.environ.copy()
           for assignment in target['environment']:
               key, value = assignment.split('=', 1); env[key] = value
-          command = ['gdb', '-batch', '-ex', 'set pagination off', '-ex', 'run',
-                     '-ex', 'thread apply all bt full', '--args', *args]
+          command = ['gdb', '-batch', '-ex', 'set pagination off', '-ex', 'set debuginfod enabled off', '-ex', 'run',
+                     '-ex', 'info threads', '-ex', 'thread apply all bt full', '-ex', 'info sharedlibrary',
+                     '-ex', 'info proc mappings', '-ex', 'info files', '-ex', 'info symbol $pc',
+                     '-ex', 'info line *$pc', '-ex', 'x/8i $pc', '--args', *args]
           wrapped = ['timeout', '--signal=TERM', '--kill-after=5s', '20s', *command]
           (out / 'invocation.json').write_text(json.dumps({
               **context, 'command': wrapped, 'debuggerCommand': command, 'timeoutSeconds': 20,
@@ -481,27 +501,33 @@ jobs:
               'note': 'One post-matrix reproduction only; timeout-command, GDB, and inferior statuses are distinct where observable.'
           }, indent=2) + '\n')
           result = subprocess.run(wrapped, cwd=target['workingDirectory'], env=env,
-                                  text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-          (out / 'gdb.log').write_text(result.stdout)
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+          (out / 'gdb.log').write_bytes(result.stdout)
+          (out / 'gdb.stderr').write_bytes(result.stderr)
+          (out / 'gdb-stdout.sha256').write_text(
+              hashlib.sha256((out / 'gdb.log').read_bytes()).hexdigest() + '  evidence/gdb/gdb.log\n')
+          (out / 'gdb-stderr.sha256').write_text(
+              hashlib.sha256((out / 'gdb.stderr').read_bytes()).hexdigest() + '  evidence/gdb/gdb.stderr\n')
+          stdout_text = result.stdout.decode('utf-8', errors='replace')
           (out / 'timeout-command.exitcode').write_text(str(result.returncode) + '\n')
           timeout_fired = result.returncode in (124, 137); debugger_exit = None if timeout_fired else result.returncode
           if debugger_exit is not None: (out / 'gdb.exitcode').write_text(str(debugger_exit) + '\n')
           patterns = [re.compile(r'Program received signal\s+(SIG[A-Z0-9]+)'),
                       re.compile(r'Thread\s+\d+\b.*?received signal\s+(SIG[A-Z0-9]+)')]
           signals = []
-          for line in result.stdout.splitlines():
+          for line in stdout_text.splitlines():
               for pattern in patterns:
                   match = pattern.search(line)
                   if match: signals.append({'signal': match.group(1), 'line': line.strip()}); break
-          exits = [line.strip() for line in result.stdout.splitlines()
+          exits = [line.strip() for line in stdout_text.splitlines()
                    if 'exited with code ' in line or 'exited normally' in line]
           (out / 'inferior-status.json').write_text(json.dumps({
               'naturalCtestExitCode': target['ctestExitCode'], 'timeoutCommandExitCode': result.returncode,
               'timeoutFired': timeout_fired, 'gdbExitCode': debugger_exit,
               'inferiorReceivedSignals': signals, 'inferiorExitLines': exits, 'schedulingPerturbed': True
           }, indent=2) + '\n')
-          if stderr_path.exists():
-              if not stderr_path.is_file(): raise RuntimeError(f'named GDB stderr is not a regular file: {stderr_path}')
+          if stderr_path.exists() or stderr_path.is_symlink():
+              if not stderr_path.is_file() or stderr_path.is_symlink(): raise RuntimeError(f'named GDB stderr is not a regular non-symlink file: {stderr_path}')
               captured = out / 'inferior.stderr'; shutil.copyfile(stderr_path, captured)
               (out / 'inferior-stderr.sha256').write_text(
                   hashlib.sha256(captured.read_bytes()).hexdigest() + '  evidence/gdb/inferior.stderr\n')
@@ -509,18 +535,21 @@ jobs:
           else:
               (out / 'inferior-stderr-missing.txt').write_text('Named GDB inferior stderr was not created; no bytes were substituted.\n')
           print(f'One bounded GDB run for {cell}; CTest exit {target["ctestExitCode"]}; timeout command exit {result.returncode}; debugger exit {debugger_exit}; inferior signals {signals or "not reported"}')
+          if timeout_fired: raise RuntimeError('GDB reproduction hit the 20-second bound; raw evidence retained, no completed debug claim')
+          if debugger_exit != 0: raise RuntimeError(f'GDB debugger process exited {debugger_exit}; raw evidence retained')
+          if not any(item['signal'] == 'SIGSEGV' for item in signals): raise RuntimeError('GDB did not report an inferior SIGSEGV; raw evidence retained')
           PY
 
       - name: Preserve raw diagnostic evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
-          name: private-cancel-probe-${{ github.run_id }}-${{ github.run_attempt }}
+          name: private-cancel-debug-r6-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             evidence/**
             source/base414/build/Testing/Temporary/LastTest.log
-            source/base414/build/core/libs/prx/libkernel/guest_event_flag_posix_cancel_probe_*.stderr
+            source/base414/build/core/libs/prx/libkernel/guest_event_flag_posix_cancel_probe_off.stderr
             source/candidate2e59/build/Testing/Temporary/LastTest.log
-            source/candidate2e59/build/core/libs/prx/libkernel/guest_event_flag_posix_cancel_probe_*.stderr
+            source/candidate2e59/build/core/libs/prx/libkernel/guest_event_flag_posix_cancel_probe_off.stderr
           if-no-files-found: error
           retention-days: 7
