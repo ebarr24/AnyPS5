@@ -371,9 +371,11 @@ public:
         completed.clear();
         assumptionReads = 0;
         cutoff = false;
+        retentionAllowed = true;
     }
 
     void MarkWorkCutoff() { cutoff = true; }
+    void DisallowRetention() { retentionAllowed = false; }
     void Invalidate() {
         retained.clear();
         results.clear();
@@ -387,7 +389,7 @@ public:
     }
 
     void FinishWalk(bool successful) {
-        if (!reuseAcrossWalks || successful || cutoff || assumptionReads != 0u) {
+        if (!reuseAcrossWalks || !retentionAllowed || successful || cutoff || assumptionReads != 0u) {
             retained.clear();
             return;
         }
@@ -447,7 +449,7 @@ private:
             if (known->second == Proof::Assumed) ++assumptionReads;
             return known->second != Proof::NotImplied;
         }
-        if (!reuseAcrossWalks) return std::nullopt;
+        if (!reuseAcrossWalks || !retentionAllowed) return std::nullopt;
         const auto old = retained.find(key);
         if (old == retained.end()) return std::nullopt;
         return old->second != Proof::NotImplied;
@@ -536,6 +538,7 @@ private:
     std::vector<ImplicationKey> completed;
     std::size_t assumptionReads = 0;
     bool cutoff = false;
+    bool retentionAllowed = true;
 };
 
 std::vector<Region> blockRegions(const IrProgram& program) {
@@ -611,6 +614,7 @@ public:
                 if (isSelect(user->Opcode()) && use.operand == 1u && implications.Implies(user->Argument(0))) continue;
                 if (user->Opcode() == IrOpcode::LogicalAnd && use.operand < 2u && implications.Implies(user->Argument(1u - use.operand))) continue;
                 if (readsOnlyWhereActive(user->Opcode()) && use.operand + 1u < user->ArgumentCount() && implications.Implies(user->Argument(user->ArgumentCount() - 1u))) continue;
+                if (user->Opcode() == IrOpcode::ReadFirstLane && use.operand == 0u) implications.DisallowRetention();
                 if (user->Opcode() == IrOpcode::ReadFirstLane && use.operand == 0u && nesting < DepthLimit && implications.Implies(user->Argument(1))) {
                     MaskedLaneWalk nested(program, regions, nesting + 1u);
                     nested.limit = work;
