@@ -46,13 +46,124 @@
 #include "Translation/include/Translation/InstructionTranslator.hpp"
 #include "Translation/include/Translation/ShaderInputInfoBuilder.hpp"
 #include <exception>
+#include <cerrno>
+#include <cstddef>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <ControlFlow/RequestSerializer.hpp>
+#ifdef __linux__
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace ShaderRecompiler {
 
 namespace {
+
+struct PhaseRecord {
+    char data[160]{};
+    std::size_t length = 0;
+};
+
+void AppendPhaseChar(PhaseRecord& record, char value) noexcept {
+    if (record.length < sizeof(record.data)) record.data[record.length++] = value;
+}
+
+void AppendPhaseText(PhaseRecord& record, const char* text) noexcept {
+    while (*text != '\0' && record.length < sizeof(record.data)) AppendPhaseChar(record, *text++);
+}
+
+void AppendPhaseNumber(PhaseRecord& record, std::uint64_t value) noexcept {
+    char digits[20];
+    unsigned count = 0;
+    do {
+        digits[count++] = static_cast<char>('0' + value % 10);
+        value /= 10;
+    } while (value != 0 && count < sizeof(digits));
+    while (count != 0) AppendPhaseChar(record, digits[--count]);
+}
+
+void WritePhaseRecord(const PhaseRecord& record) noexcept {
+#ifdef _WIN32
+    const HANDLE output = GetStdHandle(STD_ERROR_HANDLE);
+    if (output != nullptr && output != INVALID_HANDLE_VALUE) {
+        DWORD written = 0;
+        WriteFile(output, record.data, static_cast<DWORD>(record.length), &written, nullptr);
+    }
+#elif defined(__linux__)
+    struct stat status{};
+    if (::syscall(SYS_fstat, STDERR_FILENO, &status) != 0 || !S_ISREG(status.st_mode)) return;
+    std::size_t written = 0;
+    for (unsigned attempt = 0; attempt < 8 && written < record.length; ++attempt) {
+        const auto result = ::syscall(SYS_write, STDERR_FILENO, record.data + written, record.length - written);
+        if (result > 0) written += static_cast<std::size_t>(result);
+        else if (result < 0 && errno == EINTR) continue;
+        else break;
+    }
+#else
+    static_cast<void>(record);
+#endif
+}
+
+void TracePhase(const char* phase, const char* edge) noexcept {
+#ifdef _WIN32
+    const DWORD savedLastError = GetLastError();
+#endif
+    const int savedErrno = errno;
+#if defined(_WIN32) || defined(__linux__)
+    static const bool enabled = [] {
+        const char* value = std::getenv("APS5_TRACE_PHASES");
+        return value != nullptr && value[0] == '1' && value[1] == '\0';
+    }();
+#else
+    static const bool enabled = false;
+#endif
+    static std::atomic<unsigned> emitted{0};
+    static std::atomic_flag truncationReported = ATOMIC_FLAG_INIT;
+    if (enabled) {
+        unsigned count = emitted.load(std::memory_order_relaxed);
+        while (count < 64 && !emitted.compare_exchange_weak(count, count + 1, std::memory_order_relaxed)) {}
+        if (count < 64) {
+            const auto elapsed = std::chrono::steady_clock::now().time_since_epoch();
+            const auto rawNanos = std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
+            const auto nanos = rawNanos < 0 ? std::uint64_t{0} : static_cast<std::uint64_t>(rawNanos);
+            PhaseRecord record;
+            AppendPhaseText(record, "[phase] unit=recompiler phase=");
+            AppendPhaseText(record, phase);
+            AppendPhaseText(record, " edge=");
+            AppendPhaseText(record, edge);
+            AppendPhaseText(record, " mono_ns=");
+            AppendPhaseNumber(record, nanos);
+            AppendPhaseChar(record, '\n');
+            WritePhaseRecord(record);
+        } else if (!truncationReported.test_and_set(std::memory_order_relaxed)) {
+            PhaseRecord record;
+            AppendPhaseText(record, "[phase] unit=recompiler edge=truncated\n");
+            WritePhaseRecord(record);
+        }
+    }
+    errno = savedErrno;
+#ifdef _WIN32
+    SetLastError(savedLastError);
+#endif
+}
+
+class PhaseScope {
+public:
+    explicit PhaseScope(const char* phase) noexcept : phase_(phase), uncaught_(std::uncaught_exceptions()) { TracePhase(phase_, "scope_entry"); }
+    ~PhaseScope() { TracePhase(phase_, std::uncaught_exceptions() > uncaught_ ? "unwind" : "scope_exit"); }
+private:
+    const char* phase_;
+    int uncaught_;
+};
 
 ShaderStageKind toShaderStageKind(ShaderStage stage) {
     switch (stage) {
@@ -327,6 +438,7 @@ std::shared_ptr<SourceEntry> getSource(const RecompileRequest& request, ShaderPr
     auto& key = HostThreadLocal<std::vector<std::uint64_t>, SourceKeyStorage>();
     RecompileCacheKey::Build(request, key);
     key.push_back(HostSubgroupSize(request));
+    PhaseScope phase("source_plan_lookup_prepare");
     const auto find = [&]() -> std::shared_ptr<SourceEntry> {
         const auto found = sources.find(key);
         if (found == sources.end()) return nullptr;
@@ -838,6 +950,7 @@ RecompileResult materializeVariant(SourceEntry& source, const RecompileRequest& 
     std::shared_ptr<const CompiledVariant> variant;
     bool cacheHit = false;
     {
+        PhaseScope phase("variant_lookup_disk_load_or_compile");
         std::lock_guard lock(source.mutex);
         variant = findOrCompileVariant(source, request, cacheHit);
     }

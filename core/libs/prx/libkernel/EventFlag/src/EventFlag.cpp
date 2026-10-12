@@ -9,6 +9,20 @@
 #include <string>
 #include <cstdio>
 #include <cstdlib>
+#include <atomic>
+#include <cerrno>
+#include <exception>
+#ifdef __linux__
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 static constexpr int SCE_OK = 0;
 static constexpr int SCE_KERNEL_ERROR_EPERM = 0x80020001;
@@ -37,6 +51,102 @@ struct KernelEventFlagPrivate {
     int _waiters = 0;
     uint64_t _cancelGeneration = 0;
 };
+
+namespace {
+struct PhaseRecord {
+    char data[160]{};
+    std::size_t length = 0;
+};
+
+void AppendPhaseChar(PhaseRecord& record, char value) noexcept {
+    if (record.length < sizeof(record.data)) record.data[record.length++] = value;
+}
+
+void AppendPhaseText(PhaseRecord& record, const char* text) noexcept {
+    while (*text != '\0' && record.length < sizeof(record.data)) AppendPhaseChar(record, *text++);
+}
+
+void AppendPhaseNumber(PhaseRecord& record, std::uint64_t value) noexcept {
+    char digits[20];
+    unsigned count = 0;
+    do {
+        digits[count++] = static_cast<char>('0' + value % 10);
+        value /= 10;
+    } while (value != 0 && count < sizeof(digits));
+    while (count != 0) AppendPhaseChar(record, digits[--count]);
+}
+
+void WritePhaseRecord(const PhaseRecord& record) noexcept {
+#ifdef _WIN32
+    const HANDLE output = GetStdHandle(STD_ERROR_HANDLE);
+    if (output != nullptr && output != INVALID_HANDLE_VALUE) {
+        DWORD written = 0;
+        WriteFile(output, record.data, static_cast<DWORD>(record.length), &written, nullptr);
+    }
+#elif defined(__linux__)
+    struct stat status{};
+    if (::syscall(SYS_fstat, STDERR_FILENO, &status) != 0 || !S_ISREG(status.st_mode)) return;
+    std::size_t written = 0;
+    for (unsigned attempt = 0; attempt < 8 && written < record.length; ++attempt) {
+        const auto result = ::syscall(SYS_write, STDERR_FILENO, record.data + written, record.length - written);
+        if (result > 0) written += static_cast<std::size_t>(result);
+        else if (result < 0 && errno == EINTR) continue;
+        else break;
+    }
+#else
+    static_cast<void>(record);
+#endif
+}
+
+void TracePhase(const char* edge) noexcept {
+#ifdef _WIN32
+    const DWORD savedLastError = GetLastError();
+#endif
+    const int savedErrno = errno;
+#if defined(_WIN32) || defined(__linux__)
+    static const bool enabled = [] {
+        const char* value = std::getenv("APS5_TRACE_PHASES");
+        return value != nullptr && value[0] == '1' && value[1] == '\0';
+    }();
+#else
+    static const bool enabled = false;
+#endif
+    static std::atomic<unsigned> emitted{0};
+    static std::atomic_flag truncationReported = ATOMIC_FLAG_INIT;
+    if (enabled) {
+        unsigned count = emitted.load(std::memory_order_relaxed);
+        while (count < 24 && !emitted.compare_exchange_weak(count, count + 1, std::memory_order_relaxed)) {}
+        if (count < 24) {
+            const auto elapsed = std::chrono::steady_clock::now().time_since_epoch();
+            const auto rawNanos = std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
+            const auto nanos = rawNanos < 0 ? std::uint64_t{0} : static_cast<std::uint64_t>(rawNanos);
+            PhaseRecord record;
+            AppendPhaseText(record, "[phase] unit=event_flag_wait edge=");
+            AppendPhaseText(record, edge);
+            AppendPhaseText(record, " mono_ns=");
+            AppendPhaseNumber(record, nanos);
+            AppendPhaseChar(record, '\n');
+            WritePhaseRecord(record);
+        } else if (!truncationReported.test_and_set(std::memory_order_relaxed)) {
+            PhaseRecord record;
+            AppendPhaseText(record, "[phase] unit=event_flag_wait edge=truncated\n");
+            WritePhaseRecord(record);
+        }
+    }
+    errno = savedErrno;
+#ifdef _WIN32
+    SetLastError(savedLastError);
+#endif
+}
+
+class PhaseScope {
+public:
+    PhaseScope() noexcept : uncaught_(std::uncaught_exceptions()) { TracePhase("api_entry"); }
+    ~PhaseScope() { TracePhase(std::uncaught_exceptions() > uncaught_ ? "unwind" : "scope_exit"); }
+private:
+    int uncaught_;
+};
+}
 
 static bool TraceSync() {
     static const bool enabled = std::getenv("APS5_TRACE_SYNC") != nullptr;
@@ -137,6 +247,7 @@ int APS5_VABI sceKernelPollEventFlag(KernelEventFlag ef, uint64_t bit_pattern, u
 int APS5_VABI sceKernelWaitEventFlag(KernelEventFlag ef, uint64_t bit_pattern, uint32_t wait_mode, uint64_t* result_pat, KernelUseconds* timeout) {
     if (!ef) return SCE_KERNEL_ERROR_ESRCH;
     if (bit_pattern == 0 || !IsValidWaitMode(wait_mode)) return SCE_KERNEL_ERROR_EINVAL;
+    PhaseScope phase;
     std::unique_lock lock(ef->_mutex);
     if (ef->_deleted) return SCE_KERNEL_ERROR_ESRCH;
     if (!ef->_multipleWaiters && ef->_waiters != 0) return SCE_KERNEL_ERROR_EPERM;
