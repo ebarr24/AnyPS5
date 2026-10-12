@@ -6,6 +6,7 @@
 #if defined(__linux__)
 #include <dlfcn.h>
 #include <atomic>
+#include <cstring>
 #endif
 #ifdef _WIN32
 #include <windows.h>
@@ -34,13 +35,32 @@ struct NativeHostUnwindState {
     HostUnwindTargetInfo_nid_no_patch targets {};
 };
 
+constinit NativeHostUnwindState nativeHostUnwindState {};
+
 NativeHostUnwindState& NativeHostUnwind() {
-    static NativeHostUnwindState value;
-    return value;
+    return nativeHostUnwindState;
 }
 
 thread_local _Unwind_Exception* nativeForcedUnwind {};
+thread_local bool nativeHostUnwindResolving {};
+#if defined(APS5_HOST_UNWIND_TESTING)
 thread_local HostUnwindTraceBuffer_nid_no_patch* hostUnwindTrace {};
+#endif
+
+bool HasRuntimeName(const char* path, const char* prefix) {
+    if (!path) return false;
+    const char* name = std::strrchr(path, '/');
+    name = name ? name + 1 : path;
+    return std::strncmp(name, prefix, std::strlen(prefix)) == 0;
+}
+
+bool IsCompatiblePersonalityOwner(const char* path) {
+    return HasRuntimeName(path, "libstdc++.so") || HasRuntimeName(path, "libgcc_s.so");
+}
+
+bool IsCompatibleResumeOwner(const char* path) {
+    return HasRuntimeName(path, "libgcc_s.so");
+}
 
 bool ResolveNativeHostUnwind() {
     auto& state = NativeHostUnwind();
@@ -49,10 +69,12 @@ bool ResolveNativeHostUnwind() {
     if (status == 3) return false;
     unsigned expected = 0;
     if (!state.state.compare_exchange_strong(expected, 1, std::memory_order_acq_rel)) {
+        if (nativeHostUnwindResolving) return false;
         while ((status = state.state.load(std::memory_order_acquire)) == 1) {}
         return status == 2;
     }
 
+    nativeHostUnwindResolving = true;
     HostUnwindTargetInfo_nid_no_patch targets {};
     Dl_info self {}, personality {}, resume {};
     const auto nativePersonality = dlsym(RTLD_NEXT, "__gxx_personality_v0");
@@ -61,7 +83,8 @@ bool ResolveNativeHostUnwind() {
         dladdr(reinterpret_cast<void*>(&ResolveNativeHostUnwind), &self) && self.dli_fbase &&
         dladdr(nativePersonality, &personality) && personality.dli_fbase && personality.dli_fname &&
         dladdr(nativeResume, &resume) && resume.dli_fbase && resume.dli_fname &&
-        personality.dli_fbase != self.dli_fbase && resume.dli_fbase != self.dli_fbase;
+        personality.dli_fbase != self.dli_fbase && resume.dli_fbase != self.dli_fbase &&
+        IsCompatiblePersonalityOwner(personality.dli_fname) && IsCompatibleResumeOwner(resume.dli_fname);
     if (valid) {
         targets.personality = reinterpret_cast<LibcUnwind::Word>(nativePersonality);
         targets.personalityOwner = reinterpret_cast<LibcUnwind::Word>(personality.dli_fbase);
@@ -71,10 +94,12 @@ bool ResolveNativeHostUnwind() {
         targets.resumeOwnerName = resume.dli_fname;
         state.targets = targets;
     }
+    nativeHostUnwindResolving = false;
     state.state.store(valid ? 2 : 3, std::memory_order_release);
     return valid;
 }
 
+#if defined(APS5_HOST_UNWIND_TESTING)
 void RecordHostUnwindTrace(const HostUnwindTraceEvent_nid_no_patch& event) {
     if (!hostUnwindTrace) return;
     if (hostUnwindTrace->count == HostUnwindTraceBuffer_nid_no_patch::Capacity) {
@@ -83,6 +108,7 @@ void RecordHostUnwindTrace(const HostUnwindTraceEvent_nid_no_patch& event) {
     }
     hostUnwindTrace->events[hostUnwindTrace->count++] = event;
 }
+#endif
 }
 
 extern "C" bool APS5_VABI _ResolveNativeHostUnwindTargets_nid_no_patch(HostUnwindTargetInfo_nid_no_patch* targets) {
@@ -91,6 +117,7 @@ extern "C" bool APS5_VABI _ResolveNativeHostUnwindTargets_nid_no_patch(HostUnwin
     return true;
 }
 
+#if defined(APS5_HOST_UNWIND_TESTING)
 extern "C" void APS5_VABI _SetHostUnwindTraceBuffer_nid_no_patch(HostUnwindTraceBuffer_nid_no_patch* trace) {
     hostUnwindTrace = trace;
 }
@@ -98,6 +125,7 @@ extern "C" void APS5_VABI _SetHostUnwindTraceBuffer_nid_no_patch(HostUnwindTrace
 extern "C" void APS5_VABI _RecordHostUnwindTrace_nid_no_patch(const HostUnwindTraceEvent_nid_no_patch* event) {
     if (event) RecordHostUnwindTrace(*event);
 }
+#endif
 
 extern "C" HostUnwindMarkerResult_nid_no_patch APS5_VABI _MarkNativeForcedUnwind_nid_no_patch(
     _Unwind_Exception* exception, _Unwind_Reason_Code result
@@ -114,10 +142,6 @@ extern "C" bool APS5_VABI _ConsumeNativeForcedUnwindMarker_nid_no_patch(_Unwind_
     return true;
 }
 
-extern "C" void APS5_VABI _ResetNativeForcedUnwindMarkerForTest_nid_no_patch() {
-    nativeForcedUnwind = nullptr;
-}
-
 extern "C" _Unwind_Reason_Code APS5_VABI _CallNativeHostPersonality_nid_no_patch(
     int version, _Unwind_Action actions, std::uint64_t exceptionClass,
     _Unwind_Exception* exception, _Unwind_Context* context
@@ -127,11 +151,14 @@ extern "C" _Unwind_Reason_Code APS5_VABI _CallNativeHostPersonality_nid_no_patch
     using Personality = _Unwind_Reason_Code (*)(int, _Unwind_Action, std::uint64_t, _Unwind_Exception*, _Unwind_Context*);
     const auto personality = reinterpret_cast<Personality>(targets.personality);
     const auto result = personality(version, actions, exceptionClass, exception, context);
+#if defined(APS5_HOST_UNWIND_TESTING)
     const HostUnwindTraceEvent_nid_no_patch event {
         HostUnwindTraceKind_nid_no_patch::Personality, actions, result,
-        reinterpret_cast<LibcUnwind::Word>(exception), targets.personality, targets.personalityOwner, 0
+        exceptionClass, reinterpret_cast<LibcUnwind::Word>(exception),
+        targets.personality, targets.personalityOwner, 0
     };
     _RecordHostUnwindTrace_nid_no_patch(&event);
+#endif
     return result;
 }
 
@@ -628,12 +655,15 @@ _Unwind_Reason_Code APS5_VABI _Unwind_RaiseException_nid_postfix(_Unwind_Excepti
     if (_ConsumeNativeForcedUnwindMarker_nid_no_patch(exception)) {
         HostUnwindTargetInfo_nid_no_patch targets {};
         if (!_ResolveNativeHostUnwindTargets_nid_no_patch(&targets)) std::abort();
+#if defined(APS5_HOST_UNWIND_TESTING)
         const HostUnwindTraceEvent_nid_no_patch event {
             HostUnwindTraceKind_nid_no_patch::ResumeMatched, 0, 0,
-            reinterpret_cast<LibcUnwind::Word>(exception), targets.resume, targets.resumeOwner,
+            exception->exception_class, reinterpret_cast<LibcUnwind::Word>(exception),
+            targets.resume, targets.resumeOwner,
             reinterpret_cast<LibcUnwind::Word>(__builtin_return_address(0))
         };
         _RecordHostUnwindTrace_nid_no_patch(&event);
+#endif
         _CallNativeHostResume_nid_no_patch(exception);
     }
     if (!LibcException::Native(exception->exception_class) && !exception->private_1) {

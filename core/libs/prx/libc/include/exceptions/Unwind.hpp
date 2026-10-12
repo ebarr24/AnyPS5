@@ -116,6 +116,7 @@ struct HostUnwindTargetInfo_nid_no_patch {
     const char* resumeOwnerName {};
 };
 
+#if defined(APS5_HOST_UNWIND_TESTING)
 enum class HostUnwindTraceKind_nid_no_patch : unsigned {
     Personality,
     MarkerInstalled,
@@ -126,6 +127,7 @@ struct HostUnwindTraceEvent_nid_no_patch {
     HostUnwindTraceKind_nid_no_patch kind {};
     _Unwind_Action actions {};
     _Unwind_Reason_Code result {};
+    std::uint64_t exceptionClass {};
     LibcUnwind::Word exception {};
     LibcUnwind::Word target {};
     LibcUnwind::Word owner {};
@@ -138,6 +140,7 @@ struct HostUnwindTraceBuffer_nid_no_patch {
     unsigned count {};
     bool overflow {};
 };
+#endif
 
 enum class HostUnwindMarkerResult_nid_no_patch : unsigned {
     NoMarker,
@@ -147,11 +150,12 @@ enum class HostUnwindMarkerResult_nid_no_patch : unsigned {
 
 extern "C" {
     bool APS5_VABI _ResolveNativeHostUnwindTargets_nid_no_patch(HostUnwindTargetInfo_nid_no_patch*);
+#if defined(APS5_HOST_UNWIND_TESTING)
     void APS5_VABI _SetHostUnwindTraceBuffer_nid_no_patch(HostUnwindTraceBuffer_nid_no_patch*);
     void APS5_VABI _RecordHostUnwindTrace_nid_no_patch(const HostUnwindTraceEvent_nid_no_patch*);
+#endif
     HostUnwindMarkerResult_nid_no_patch APS5_VABI _MarkNativeForcedUnwind_nid_no_patch(_Unwind_Exception*, _Unwind_Reason_Code);
     bool APS5_VABI _ConsumeNativeForcedUnwindMarker_nid_no_patch(_Unwind_Exception*);
-    void APS5_VABI _ResetNativeForcedUnwindMarkerForTest_nid_no_patch();
     _Unwind_Reason_Code APS5_VABI _CallNativeHostPersonality_nid_no_patch(int, _Unwind_Action, std::uint64_t, _Unwind_Exception*, _Unwind_Context*);
     [[noreturn]] void APS5_VABI _CallNativeHostResume_nid_no_patch(_Unwind_Exception*);
 }

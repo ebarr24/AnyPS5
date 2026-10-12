@@ -113,15 +113,18 @@ extern "C" _Unwind_Reason_Code __gxx_personality_v0(
         const auto result = _CallNativeHostPersonality_nid_no_patch(version, actions, exceptionClass, exception, context);
         const auto marker = _MarkNativeForcedUnwind_nid_no_patch(exception, result);
         if (marker == HostUnwindMarkerResult_nid_no_patch::Rejected) return _URC_FATAL_PHASE2_ERROR;
+#if defined(APS5_HOST_UNWIND_TESTING)
         if (marker == HostUnwindMarkerResult_nid_no_patch::Marked) {
             HostUnwindTargetInfo_nid_no_patch targets {};
             if (!_ResolveNativeHostUnwindTargets_nid_no_patch(&targets)) return _URC_FATAL_PHASE2_ERROR;
             const HostUnwindTraceEvent_nid_no_patch event {
                 HostUnwindTraceKind_nid_no_patch::MarkerInstalled, actions, result,
-                reinterpret_cast<LibcUnwind::Word>(exception), targets.personality, targets.personalityOwner, 0
+                exceptionClass, reinterpret_cast<LibcUnwind::Word>(exception),
+                targets.personality, targets.personalityOwner, 0
             };
             _RecordHostUnwindTrace_nid_no_patch(&event);
         }
+#endif
         return result;
     }
 #endif
