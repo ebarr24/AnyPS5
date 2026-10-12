@@ -50,7 +50,7 @@ jobs:
   linux:
     needs: eligibility
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
         with:
@@ -78,7 +78,9 @@ jobs:
       - name: Run cmake --build build --target libs
         run: cmake --build build --target libs
       - name: Run ctest --test-dir build --output-on-failure --timeout 120 --repeat until-fail:3 --parallel 4 --output-log ctest.log
-        run: ctest --test-dir build --output-on-failure --timeout 120 --repeat until-fail:3 --parallel 4 --output-log "$GITHUB_WORKSPACE/build/ctest.log" --output-junit "$GITHUB_WORKSPACE/build/ctest.xml"
+        run: |
+          set -o pipefail
+          ctest --test-dir build --output-on-failure --timeout 120 --repeat until-fail:3 --parallel 4 --output-log "$GITHUB_WORKSPACE/build/ctest.log" --output-junit "$GITHUB_WORKSPACE/build/ctest.xml" 2>&1 | tee "$GITHUB_WORKSPACE/build/ctest-live.log"
         env:
           ANYPS5_REQUIRE_VULKAN: 1
           GALLIUM_OVERRIDE_CPU_CAPS: avx
@@ -97,6 +99,7 @@ jobs:
         with:
           name: linux-ctest-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            build/ctest-live.log
             build/ctest.xml
             build/ctest.log
             build/Testing/Temporary/LastTest.log
