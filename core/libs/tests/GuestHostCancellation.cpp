@@ -148,18 +148,20 @@ void CheckResolverContention() {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
 
     const bool loserReturnedBeforeRelease = loserDone.load(std::memory_order_acquire);
+    const bool loserOutputUntouchedBeforeRelease = loserReturnedBeforeRelease &&
+        SameTargets(loserTargets, untouchedTargets);
     const bool winnerStillHeld = gateHeld && entered() && !ownerDone.load(std::memory_order_acquire);
-    const bool loserOutputUntouched = SameTargets(loserTargets, untouchedTargets);
     release();
     owner.join();
     loser.join();
 
     std::fprintf(stderr,
-        "resolver contention: contenderObserved=%d returnedBeforeOwnerRelease=%d winnerHeld=%d outputUntouched=%d loserResult=%d\n",
-        enteredContention, loserReturnedBeforeRelease, winnerStillHeld, loserOutputUntouched, loserResult);
+        "resolver contention: contenderObserved=%d returnedBeforeOwnerRelease=%d winnerHeld=%d outputUntouchedBeforeRelease=%d loserResult=%d\n",
+        enteredContention, loserReturnedBeforeRelease, winnerStillHeld, loserOutputUntouchedBeforeRelease, loserResult);
     Require(gateHeld && enteredContention);
     Require(loserReturnedBeforeRelease);
-    Require(winnerStillHeld && loserOutputUntouched);
+    Require(winnerStillHeld);
+    Require(loserOutputUntouchedBeforeRelease);
     Require(!loserResult);
     Require(ownerResult);
     Require(ownerTargets.personality && ownerTargets.personalityOwner && ownerTargets.personalityOwnerName);

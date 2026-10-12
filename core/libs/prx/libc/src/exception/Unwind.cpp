@@ -147,8 +147,7 @@ extern "C" bool APS5_VABI _NativeHostUnwindResolverTestGateEntered_nid_no_patch(
 }
 
 extern "C" void APS5_VABI _ReleaseNativeHostUnwindResolverTestGate_nid_no_patch() {
-    unsigned entered = 2;
-    nativeHostUnwindResolverTestGate.compare_exchange_strong(entered, 3, std::memory_order_release);
+    nativeHostUnwindResolverTestGate.store(3, std::memory_order_release);
 }
 
 extern "C" unsigned APS5_VABI _NativeHostUnwindResolverTestContenders_nid_no_patch() {
