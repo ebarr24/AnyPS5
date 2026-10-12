@@ -95,7 +95,7 @@ jobs:
             > evidence/identity.txt
           uname -a >> evidence/identity.txt
       - name: Install lavapipe for shader execution
-        run: timeout --signal=TERM --kill-after=10s 10m sudo apt-get update && timeout --signal=TERM --kill-after=10s 10m sudo apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers
+        run: timeout --signal=TERM --kill-after=10s 10m sudo apt-get update && timeout --signal=TERM --kill-after=10s 10m sudo apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers libpipewire-0.3-dev libpulse-dev libasound2-dev
       - name: Run matched base and candidate diagnostics
         env:
           BASE_SHA: ${{ needs.eligibility.outputs.base_sha }}
