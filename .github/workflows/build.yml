@@ -1,4 +1,4 @@
-name: Bounded host unwind resolver regression
+name: Concurrent cold host unwind resolver regression
 
 on:
   workflow_dispatch:
@@ -12,13 +12,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: host-unwind-resolver-${{ github.event_name }}-${{ github.ref }}
+  group: host-unwind-concurrent-cold-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: false
 
 env:
   BASE_SHA: 9aa5fd290007d816bfed6970ee259f9baaa0e24e
   LEGACY_SHA: b758d156dd850da84e166b14f282cbba393d331c
-  CANDIDATE_SHA: 0186b61026aefd76124ef30b9b07de8a43b3bb05
+  CANDIDATE_SHA: cf0dc99e8fc547aa0e76a5e4e71ccf350801b072
   CONFIGURE: >-
     -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
     -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
@@ -47,7 +47,7 @@ jobs:
               throw new Error('The historical 3391 input is schema-only and must not select a PR');
             }
             const { owner, repo } = context.repo;
-            if (owner !== 'ebarr24' || repo !== 'AnyPS5' || context.ref !== 'refs/heads/phase-observer-host-personality-bounded') {
+            if (owner !== 'ebarr24' || repo !== 'AnyPS5' || context.ref !== 'refs/heads/phase-observer-host-personality-concurrent-cold') {
               throw new Error('Dispatch is restricted to the isolated ebarr24/AnyPS5 diagnostic branch');
             }
             const { data: repository } = await github.rest.repos.get({ owner, repo });
@@ -63,7 +63,7 @@ jobs:
             const pins = {
               base: '9aa5fd290007d816bfed6970ee259f9baaa0e24e',
               legacy: 'b758d156dd850da84e166b14f282cbba393d331c',
-              candidate: '0186b61026aefd76124ef30b9b07de8a43b3bb05',
+              candidate: 'cf0dc99e8fc547aa0e76a5e4e71ccf350801b072',
             };
             for (const [name, sha] of Object.entries(pins)) {
               const { data } = await github.rest.repos.getCommit({ owner, repo, ref: sha });
@@ -163,31 +163,31 @@ jobs:
           test ! -e source/base/core/libs/tests/GuestHostCancellation.cpp
           cp source/head/core/libs/tests/GuestHostCancellation.cpp source/base/core/libs/tests/GuestHostCancellation.cpp
           git -C source/head diff --no-ext-diff "$BASE_SHA" "$CANDIDATE_SHA" -- core/libs/prx/libkernel/CMakeLists.txt > evidence/base/libkernel-test-registration.patch
-          git -C source/head diff --no-ext-diff "$BASE_SHA" "$CANDIDATE_SHA" -- core/libs/prx/libc/include/exceptions/Unwind.hpp > evidence/base/unwind-test-declarations.patch
           test -s evidence/base/libkernel-test-registration.patch
-          test -s evidence/base/unwind-test-declarations.patch
           git -C source/base apply --check "$GITHUB_WORKSPACE/evidence/base/libkernel-test-registration.patch"
-          git -C source/base apply --check "$GITHUB_WORKSPACE/evidence/base/unwind-test-declarations.patch"
           git -C source/base apply "$GITHUB_WORKSPACE/evidence/base/libkernel-test-registration.patch"
-          git -C source/base apply "$GITHUB_WORKSPACE/evidence/base/unwind-test-declarations.patch"
+          sed -i 's/ APS5_HOST_UNWIND_TARGET_PAIR_MARKER=1//g' source/base/core/libs/prx/libkernel/CMakeLists.txt
           cp source/head/core/libs/tests/GuestHostCancellation.cpp source/legacy/core/libs/tests/GuestHostCancellation.cpp
-          cp source/head/core/libs/prx/libc/include/exceptions/Unwind.hpp source/legacy/core/libs/prx/libc/include/exceptions/Unwind.hpp
           cp source/head/core/libs/prx/libkernel/CMakeLists.txt source/legacy/core/libs/prx/libkernel/CMakeLists.txt
+          sed -i 's/ APS5_HOST_UNWIND_TARGET_PAIR_MARKER=1//g' source/legacy/core/libs/prx/libkernel/CMakeLists.txt
           git -C source/legacy apply --unidiff-zero --check "$GITHUB_WORKSPACE/driver/.github/host-unwind/legacy-resolver-test-hooks.patch"
           git -C source/legacy apply --unidiff-zero "$GITHUB_WORKSPACE/driver/.github/host-unwind/legacy-resolver-test-hooks.patch"
           test "$(sha256sum source/base/core/libs/tests/GuestHostCancellation.cpp | cut -d' ' -f1)" = "$(sha256sum source/head/core/libs/tests/GuestHostCancellation.cpp | cut -d' ' -f1)"
           test "$(sha256sum source/legacy/core/libs/tests/GuestHostCancellation.cpp | cut -d' ' -f1)" = "$(sha256sum source/head/core/libs/tests/GuestHostCancellation.cpp | cut -d' ' -f1)"
-          test "$(git -C source/base status --porcelain | wc -l)" -eq 3
-          test "$(git -C source/base status --porcelain | sed 's/^...//' | sort | paste -sd, -)" = "core/libs/prx/libc/include/exceptions/Unwind.hpp,core/libs/prx/libkernel/CMakeLists.txt,core/libs/tests/GuestHostCancellation.cpp"
-          test "$(git -C source/legacy status --porcelain | wc -l)" -eq 4
-          test "$(git -C source/legacy status --porcelain | sed 's/^...//' | sort | paste -sd, -)" = "core/libs/prx/libc/include/exceptions/Unwind.hpp,core/libs/prx/libc/src/exception/Unwind.cpp,core/libs/prx/libkernel/CMakeLists.txt,core/libs/tests/GuestHostCancellation.cpp"
+          ! grep -q APS5_HOST_UNWIND_TARGET_PAIR_MARKER source/base/core/libs/prx/libkernel/CMakeLists.txt
+          ! grep -q APS5_HOST_UNWIND_TARGET_PAIR_MARKER source/legacy/core/libs/prx/libkernel/CMakeLists.txt
+          grep -q APS5_HOST_UNWIND_TARGET_PAIR_MARKER source/head/core/libs/prx/libkernel/CMakeLists.txt
+          test "$(git -C source/base status --porcelain | wc -l)" -eq 2
+          test "$(git -C source/base status --porcelain | sed 's/^...//' | sort | paste -sd, -)" = "core/libs/prx/libkernel/CMakeLists.txt,core/libs/tests/GuestHostCancellation.cpp"
+          test "$(git -C source/legacy status --porcelain | wc -l)" -eq 3
+          test "$(git -C source/legacy status --porcelain | sed 's/^...//' | sort | paste -sd, -)" = "core/libs/prx/libc/src/exception/Unwind.cpp,core/libs/prx/libkernel/CMakeLists.txt,core/libs/tests/GuestHostCancellation.cpp"
           grep -q 'while ((status = state.state.load(std::memory_order_acquire)) == 1)' source/legacy/core/libs/prx/libc/src/exception/Unwind.cpp
           ! grep -q 'return expected == 2;' source/legacy/core/libs/prx/libc/src/exception/Unwind.cpp
           ! grep -q 'while ((status = state.state.load(std::memory_order_acquire)) == 1)' source/head/core/libs/prx/libc/src/exception/Unwind.cpp
           grep -q 'nativeHostUnwindResolverTestContenders' driver/.github/host-unwind/legacy-resolver-test-hooks.patch
           git -C source/base diff --check
           git -C source/legacy diff --check
-          sha256sum source/base/core/libs/tests/GuestHostCancellation.cpp source/head/core/libs/tests/GuestHostCancellation.cpp source/legacy/core/libs/tests/GuestHostCancellation.cpp source/base/core/libs/prx/libc/include/exceptions/Unwind.hpp source/head/core/libs/prx/libc/include/exceptions/Unwind.hpp source/legacy/core/libs/prx/libc/include/exceptions/Unwind.hpp source/base/core/libs/prx/libkernel/CMakeLists.txt source/head/core/libs/prx/libkernel/CMakeLists.txt source/legacy/core/libs/prx/libkernel/CMakeLists.txt driver/.github/host-unwind/legacy-resolver-test-hooks.patch > evidence/identity/fixture-and-overlay.sha256
+          sha256sum evidence/base/libkernel-test-registration.patch source/base/core/libs/tests/GuestHostCancellation.cpp source/head/core/libs/tests/GuestHostCancellation.cpp source/legacy/core/libs/tests/GuestHostCancellation.cpp source/base/core/libs/prx/libkernel/CMakeLists.txt source/head/core/libs/prx/libkernel/CMakeLists.txt source/legacy/core/libs/prx/libkernel/CMakeLists.txt source/legacy/core/libs/prx/libc/src/exception/Unwind.cpp driver/.github/host-unwind/legacy-resolver-test-hooks.patch > evidence/identity/fixture-and-overlay.sha256
           git -C source/base status --short > evidence/base/overlay-status.txt
           git -C source/legacy status --short > evidence/legacy/overlay-status.txt
 
@@ -199,12 +199,12 @@ jobs:
         working-directory: source/base
         run: cmake --build build --target guest_host_cancellation_tests exception_runtime_tests exception_personality_tests exception_c_cleanup_tests --parallel 2 > ../../evidence/base/build.log 2>&1
 
-      - name: Run the original base red plus three controls
+      - name: Run original base cancellation reds plus three controls
         working-directory: source/base
         run: |
           set -euo pipefail
           set +e
-          ctest --test-dir build --output-on-failure --timeout 120 --test-output-size-passed 1048576 --test-output-size-failed 1048576 -R '^(guest_host_cancellation|exception_runtime|exception_personality|exception_c_cleanup)$' --output-log "$GITHUB_WORKSPACE/evidence/base/ctest.log" --output-junit "$GITHUB_WORKSPACE/evidence/base/ctest.xml" > "$GITHUB_WORKSPACE/evidence/base/console.log" 2>&1
+          ctest --test-dir build --output-on-failure --timeout 120 --test-output-size-passed 1048576 --test-output-size-failed 1048576 -R '^(guest_host_cancellation|guest_host_concurrent_cold_cancellation|exception_runtime|exception_personality|exception_c_cleanup)$' --output-log "$GITHUB_WORKSPACE/evidence/base/ctest.log" --output-junit "$GITHUB_WORKSPACE/evidence/base/ctest.xml" > "$GITHUB_WORKSPACE/evidence/base/console.log" 2>&1
           result=$?
           set -e
           cp build/Testing/Temporary/LastTest.log "$GITHUB_WORKSPACE/evidence/base/LastTest.log"
@@ -216,16 +216,20 @@ jobs:
           import sys, xml.etree.ElementTree as ET
           root = ET.parse(sys.argv[1]).getroot()
           cases = [n for n in root.iter() if n.tag.rsplit('}', 1)[-1] == 'testcase']
-          expected = {'guest_host_cancellation', 'exception_runtime', 'exception_personality', 'exception_c_cleanup'}
+          expected = {'guest_host_cancellation', 'guest_host_concurrent_cold_cancellation', 'exception_runtime', 'exception_personality', 'exception_c_cleanup'}
           names = [n.get('name') for n in cases]
           if set(names) != expected or len(names) != len(expected):
               raise SystemExit(f'base result set mismatch: {names!r}')
           by_name = {n.get('name'): n for n in cases}
-          for name in expected - {'guest_host_cancellation'}:
+          for name in expected - {'guest_host_cancellation', 'guest_host_concurrent_cold_cancellation'}:
               if any(c.tag.rsplit('}', 1)[-1] in {'failure', 'error', 'skipped'} for c in by_name[name]):
                   raise SystemExit(f'base control did not pass: {name}')
-          if not any(c.tag.rsplit('}', 1)[-1] in {'failure', 'error'} for c in by_name['guest_host_cancellation']):
-              raise SystemExit('base cancellation lacks intended failure record')
+          for name in {'guest_host_cancellation', 'guest_host_concurrent_cold_cancellation'}:
+              failures = [c for c in by_name[name] if c.tag.rsplit('}', 1)[-1] in {'failure', 'error'}]
+              if not failures:
+                  raise SystemExit(f'base cancellation case lacks expected red: {name}')
+              if not any('SEGFAULT' in (failure.get('message') or '').upper() or 'SIGSEGV' in (failure.get('message') or '').upper() for failure in failures):
+                  raise SystemExit(f'base cancellation red was not the original signal fault: {name}')
           if any(c.tag.rsplit('}', 1)[-1] == 'skipped' for n in cases for c in n):
               raise SystemExit('base focused result contains a skip')
           PY
@@ -249,7 +253,7 @@ jobs:
           cp build/Testing/Temporary/LastTest.log "$GITHUB_WORKSPACE/evidence/legacy/LastTest.log"
           printf '%s\n' "$result" > "$GITHUB_WORKSPACE/evidence/legacy/ctest.exitcode"
           test "$result" -ne 0
-          grep -q 'contenderObserved=1 returnedBeforeOwnerRelease=0 winnerHeld=1 outputUntouchedBeforeRelease=0' "$GITHUB_WORKSPACE/evidence/legacy/LastTest.log"
+          grep -q 'contenderObserved=1 returnedBeforeOwnerRelease=0 winnerHeld=1 localPairValid=0 localPair=-1' "$GITHUB_WORKSPACE/evidence/legacy/LastTest.log"
           grep -q 'assertion failed: loserReturnedBeforeRelease' "$GITHUB_WORKSPACE/evidence/legacy/LastTest.log"
           python3 - "$GITHUB_WORKSPACE/evidence/legacy/ctest.xml" <<'PY'
           import sys, xml.etree.ElementTree as ET
@@ -266,16 +270,16 @@ jobs:
         working-directory: source/head
         run: cmake -S . -B build $CONFIGURE -DANYPS5_ENABLE_SPIRV_TOOLS=ON > ../../evidence/head/configure.log 2>&1
 
-      - name: Build the five essential head regression targets
+      - name: Build the six essential head regression targets
         working-directory: source/head
         run: cmake --build build --target guest_host_cancellation_tests exception_runtime_tests exception_personality_tests exception_c_cleanup_tests --parallel 2 > ../../evidence/head/focused-build.log 2>&1
 
-      - name: Run cold cancellation, bounded contention, and three controls on head
+      - name: Run cold cancellation, bounded contention, concurrent cold cancellation, and three controls
         working-directory: source/head
         run: |
           set -euo pipefail
           set +e
-          ctest --test-dir build --output-on-failure --timeout 120 --test-output-size-passed 1048576 --test-output-size-failed 1048576 -R '^(guest_host_cancellation|guest_host_resolver_contention|exception_runtime|exception_personality|exception_c_cleanup)$' --output-log "$GITHUB_WORKSPACE/evidence/head/ctest.log" --output-junit "$GITHUB_WORKSPACE/evidence/head/ctest.xml" > "$GITHUB_WORKSPACE/evidence/head/console.log" 2>&1
+          ctest --test-dir build --output-on-failure --timeout 120 --test-output-size-passed 1048576 --test-output-size-failed 1048576 -R '^(guest_host_cancellation|guest_host_resolver_contention|guest_host_concurrent_cold_cancellation|exception_runtime|exception_personality|exception_c_cleanup)$' --output-log "$GITHUB_WORKSPACE/evidence/head/ctest.log" --output-junit "$GITHUB_WORKSPACE/evidence/head/ctest.xml" > "$GITHUB_WORKSPACE/evidence/head/console.log" 2>&1
           result=$?
           set -e
           cp build/Testing/Temporary/LastTest.log "$GITHUB_WORKSPACE/evidence/head/LastTest.log"
@@ -285,12 +289,14 @@ jobs:
             echo 'passed-test output was unexpectedly truncated' >&2
             exit 1
           fi
-          grep -q 'resolver contention: contenderObserved=1 returnedBeforeOwnerRelease=1 winnerHeld=1 outputUntouchedBeforeRelease=1 loserResult=0' "$GITHUB_WORKSPACE/evidence/head/LastTest.log"
+          grep -q 'resolver contention: contenderObserved=1 returnedBeforeOwnerRelease=1 winnerHeld=1 localPairValid=1 localPair=1' "$GITHUB_WORKSPACE/evidence/head/LastTest.log"
+          grep -q 'concurrent cancellation: simultaneous event-flag waiters=2' "$GITHUB_WORKSPACE/evidence/head/LastTest.log"
+          grep -q 'concurrent cancellation: gateHeld=1 contenderBeforeOwnerRelease=1 winnerStillHeld=1 contenderCanceled=1 ownerJoined=1 ownerCanceled=1' "$GITHUB_WORKSPACE/evidence/head/LastTest.log"
           python3 - "$GITHUB_WORKSPACE/evidence/head/ctest.xml" "$GITHUB_WORKSPACE/evidence/head/LastTest.log" <<'PY'
           import re, sys, xml.etree.ElementTree as ET
           root = ET.parse(sys.argv[1]).getroot()
           cases = [n for n in root.iter() if n.tag.rsplit('}', 1)[-1] == 'testcase']
-          expected = {'guest_host_cancellation', 'guest_host_resolver_contention', 'exception_runtime', 'exception_personality', 'exception_c_cleanup'}
+          expected = {'guest_host_cancellation', 'guest_host_resolver_contention', 'guest_host_concurrent_cold_cancellation', 'exception_runtime', 'exception_personality', 'exception_c_cleanup'}
           names = [n.get('name') for n in cases]
           if set(names) != expected or len(names) != len(expected):
               raise SystemExit(f'head result set mismatch: {names!r}')
@@ -298,12 +304,17 @@ jobs:
               if any(c.tag.rsplit('}', 1)[-1] in {'failure', 'error', 'skipped'} for c in case):
                   raise SystemExit(f'head case did not pass: {case.get("name")}')
           log = open(sys.argv[2], encoding='utf-8', errors='replace').read()
-          events = [int(i) for i in re.findall(r'host unwind event (\d+):', log)]
-          if not events or events != list(range(len(events))):
-              raise SystemExit(f'candidate trace event lines incomplete or noncontiguous: {events!r}')
-          kinds = [int(i) for i in re.findall(r'host unwind event \d+: kind=(\d+)', log)]
-          if not any(kind == 1 for kind in kinds) or not any(kind == 2 for kind in kinds):
-              raise SystemExit(f'candidate trace lacks install/resume event lines: {kinds!r}')
+          for label, local in [('single', '0'), ('winner', '0'), ('contender', '1')]:
+              events = re.findall(rf'host unwind \[{label}\] event (\d+): kind=(\d+)', log)
+              indexes = [int(index) for index, _ in events]
+              kinds = [int(kind) for _, kind in events]
+              if not indexes or indexes != list(range(len(indexes))):
+                  raise SystemExit(f'{label} trace event lines incomplete or noncontiguous: {indexes!r}')
+              if not any(kind == 1 for kind in kinds) or not any(kind == 2 for kind in kinds):
+                  raise SystemExit(f'{label} trace lacks install/resume event lines: {kinds!r}')
+              local_values = re.findall(rf'host unwind \[{label}\] event \d+: localPair=(\d+)', log)
+              if not local_values or any(value != local for value in local_values):
+                  raise SystemExit(f'{label} did not use the expected native target source {local}: {local_values!r}')
           if 'libkernel.prx' not in log or 'libgcc_s.so' not in log or 'libstdc++.so' not in log:
               raise SystemExit('complete head log lacks recorded runtime/callsite owner names')
           PY
@@ -312,7 +323,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
-          name: host-forced-personality-bounded-${{ github.run_id }}-${{ github.run_attempt }}
+          name: host-forced-personality-concurrent-cold-${{ github.run_id }}-${{ github.run_attempt }}
           path: evidence/**
           if-no-files-found: error
           retention-days: 7
