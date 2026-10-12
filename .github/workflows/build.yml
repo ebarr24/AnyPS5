@@ -1,10 +1,10 @@
-name: Build
+name: Bounded host unwind resolver regression
 
 on:
   workflow_dispatch:
     inputs:
       pr:
-        description: Historical workflow-schema input only; does not select a PR
+        description: Historical schema-only input; no PR is selected
         required: true
         type: string
 
@@ -12,10 +12,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: host-personality-${{ github.event_name }}-${{ github.ref }}
+  group: host-unwind-resolver-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: false
 
 env:
+  BASE_SHA: 9aa5fd290007d816bfed6970ee259f9baaa0e24e
+  LEGACY_SHA: b758d156dd850da84e166b14f282cbba393d331c
+  CANDIDATE_SHA: 0186b61026aefd76124ef30b9b07de8a43b3bb05
   CONFIGURE: >-
     -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
     -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
@@ -30,6 +33,7 @@ jobs:
       pull-requests: read
     outputs:
       base: ${{ steps.gate.outputs.base }}
+      legacy: ${{ steps.gate.outputs.legacy }}
       candidate: ${{ steps.gate.outputs.candidate }}
     steps:
       - uses: actions/github-script@v8
@@ -40,10 +44,10 @@ jobs:
         with:
           script: |
             if (!/^[1-9][0-9]*$/.test(process.env.PR_SCHEMA_INPUT) || process.env.PR_SCHEMA_INPUT !== '3391') {
-              throw new Error('The required historical 3391 workflow input is schema-only and must not select a PR');
+              throw new Error('The historical 3391 input is schema-only and must not select a PR');
             }
             const { owner, repo } = context.repo;
-            if (owner !== 'ebarr24' || repo !== 'AnyPS5' || context.ref !== 'refs/heads/phase-observer-host-personality-9aa') {
+            if (owner !== 'ebarr24' || repo !== 'AnyPS5' || context.ref !== 'refs/heads/phase-observer-host-personality-bounded') {
               throw new Error('Dispatch is restricted to the isolated ebarr24/AnyPS5 diagnostic branch');
             }
             const { data: repository } = await github.rest.repos.get({ owner, repo });
@@ -53,29 +57,31 @@ jobs:
             for (const username of new Set([context.actor, process.env.TRIGGERING_ACTOR])) {
               const { data } = await github.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username });
               if (!['write', 'maintain', 'admin'].includes(data.permission)) {
-                throw new Error('Both the actor and triggering actor must have write access');
+                throw new Error('Both actor and triggering actor must have write access');
               }
             }
-            const baseSha = '9aa5fd290007d816bfed6970ee259f9baaa0e24e';
-            const candidateSha = 'b758d156dd850da84e166b14f282cbba393d331c';
-            for (const sha of [baseSha, candidateSha]) {
+            const pins = {
+              base: '9aa5fd290007d816bfed6970ee259f9baaa0e24e',
+              legacy: 'b758d156dd850da84e166b14f282cbba393d331c',
+              candidate: '0186b61026aefd76124ef30b9b07de8a43b3bb05',
+            };
+            for (const [name, sha] of Object.entries(pins)) {
               const { data } = await github.rest.repos.getCommit({ owner, repo, ref: sha });
-              if (data.sha !== sha) throw new Error(`Pinned source commit unavailable: ${sha}`);
+              if (data.sha !== sha) throw new Error(`Pinned ${name} commit unavailable: ${sha}`);
+              core.setOutput(name, sha);
             }
-            core.setOutput('base', baseSha);
-            core.setOutput('candidate', candidateSha);
             core.info('The 3391 input is schema-only; no PR is queried, selected, or merged.');
-            await core.summary.addRaw(`Linux host forced-unwind regression: base ${baseSha}, candidate ${candidateSha}; no PR selected.`).write();
+            await core.summary.addRaw(`Resolver contention diagnostic: base ${pins.base}; legacy waiter ${pins.legacy}; candidate ${pins.candidate}; no PR selected.`).write();
 
   linux:
     needs: eligibility
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 70
     defaults:
       run:
         shell: bash
     steps:
-      - name: Checkout frozen diagnostic driver
+      - name: Checkout diagnostic driver
         uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
@@ -84,7 +90,7 @@ jobs:
           persist-credentials: false
           submodules: recursive
 
-      - name: Checkout exact selected base 9aa
+      - name: Checkout exact original base 9aa
         uses: actions/checkout@v7
         with:
           repository: ${{ github.repository }}
@@ -94,7 +100,17 @@ jobs:
           persist-credentials: false
           submodules: recursive
 
-      - name: Checkout exact candidate head
+      - name: Checkout previous candidate with unbounded waiter
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ needs.eligibility.outputs.legacy }}
+          path: source/legacy
+          fetch-depth: 0
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Checkout exact bounded candidate head
         uses: actions/checkout@v7
         with:
           repository: ${{ github.repository }}
@@ -104,38 +120,44 @@ jobs:
           persist-credentials: false
           submodules: recursive
 
-      - name: Prepare durable evidence location
+      - name: Capture identities and prove clean checkouts
         run: |
           set -euo pipefail
-          mkdir -p evidence/base evidence/head evidence/identity
+          mkdir -p evidence/{base,legacy,head,identity}
           driver_head="$(git -C driver rev-parse HEAD)"
           test "$driver_head" = "$GITHUB_SHA"
-          printf 'run=%s\nattempt=%s\nworkflowEvent=%s\ndriverHead=%s\nbase=%s\ncandidate=%s\n' \
+          printf 'run=%s\nattempt=%s\nworkflowEvent=%s\ndriverHead=%s\nbase=%s\nlegacy=%s\ncandidate=%s\n' \
             "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_EVENT_NAME" "$driver_head" \
-            '${{ needs.eligibility.outputs.base }}' '${{ needs.eligibility.outputs.candidate }}' > evidence/identity/run.txt
-          sha256sum driver/.github/workflows/build.yml > evidence/identity/driver-workflow.sha256
+            '${{ needs.eligibility.outputs.base }}' '${{ needs.eligibility.outputs.legacy }}' \
+            '${{ needs.eligibility.outputs.candidate }}' > evidence/identity/run.txt
+          sha256sum driver/.github/workflows/build.yml driver/.github/host-unwind/legacy-resolver-test-hooks.patch > evidence/identity/driver-inputs.sha256
           test "$(git -C source/base rev-parse HEAD)" = '${{ needs.eligibility.outputs.base }}'
+          test "$(git -C source/legacy rev-parse HEAD)" = '${{ needs.eligibility.outputs.legacy }}'
           test "$(git -C source/head rev-parse HEAD)" = '${{ needs.eligibility.outputs.candidate }}'
           test -z "$(git -C source/base status --porcelain)"
+          test -z "$(git -C source/legacy status --porcelain)"
           test -z "$(git -C source/head status --porcelain)"
+          ctest --help | grep -q -- '--test-output-size-passed'
+          ctest --help | grep -q -- '--test-output-size-failed'
 
       - uses: hendrikmuhs/ccache-action@v1.2.24
         with:
-          key: host-forced-personality-9aa
+          key: host-unwind-resolver-9aa
           save: false
           evict-old-files: job
 
       - name: Install Linux build dependencies
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers libpipewire-0.3-dev libpulse-dev libasound2-dev
 
-      - name: Record exact candidate checkout
-        working-directory: source/head
-        run: git log -1 --format=%H
+      - name: Record source and focused driver hashes
+        run: |
+          set -euo pipefail
+          git -C source/base log -1 --format=%H
+          git -C source/legacy log -1 --format=%H
+          git -C source/head log -1 --format=%H
+          sha256sum driver/.github/host-unwind/legacy-resolver-test-hooks.patch
 
-      - name: Apply identical test-only overlay to base
-        env:
-          BASE_SHA: ${{ needs.eligibility.outputs.base }}
-          CANDIDATE_SHA: ${{ needs.eligibility.outputs.candidate }}
+      - name: Apply identical public fixture to original base and legacy waiter
         run: |
           set -euo pipefail
           test ! -e source/base/core/libs/tests/GuestHostCancellation.cpp
@@ -148,32 +170,44 @@ jobs:
           git -C source/base apply --check "$GITHUB_WORKSPACE/evidence/base/unwind-test-declarations.patch"
           git -C source/base apply "$GITHUB_WORKSPACE/evidence/base/libkernel-test-registration.patch"
           git -C source/base apply "$GITHUB_WORKSPACE/evidence/base/unwind-test-declarations.patch"
+          cp source/head/core/libs/tests/GuestHostCancellation.cpp source/legacy/core/libs/tests/GuestHostCancellation.cpp
+          cp source/head/core/libs/prx/libc/include/exceptions/Unwind.hpp source/legacy/core/libs/prx/libc/include/exceptions/Unwind.hpp
+          cp source/head/core/libs/prx/libkernel/CMakeLists.txt source/legacy/core/libs/prx/libkernel/CMakeLists.txt
+          git -C source/legacy apply --check "$GITHUB_WORKSPACE/driver/.github/host-unwind/legacy-resolver-test-hooks.patch"
+          git -C source/legacy apply "$GITHUB_WORKSPACE/driver/.github/host-unwind/legacy-resolver-test-hooks.patch"
           test "$(sha256sum source/base/core/libs/tests/GuestHostCancellation.cpp | cut -d' ' -f1)" = "$(sha256sum source/head/core/libs/tests/GuestHostCancellation.cpp | cut -d' ' -f1)"
+          test "$(sha256sum source/legacy/core/libs/tests/GuestHostCancellation.cpp | cut -d' ' -f1)" = "$(sha256sum source/head/core/libs/tests/GuestHostCancellation.cpp | cut -d' ' -f1)"
           test "$(git -C source/base status --porcelain | wc -l)" -eq 3
           test "$(git -C source/base status --porcelain | sed 's/^...//' | sort | paste -sd, -)" = "core/libs/prx/libc/include/exceptions/Unwind.hpp,core/libs/prx/libkernel/CMakeLists.txt,core/libs/tests/GuestHostCancellation.cpp"
-          sha256sum source/base/core/libs/tests/GuestHostCancellation.cpp source/head/core/libs/tests/GuestHostCancellation.cpp source/base/core/libs/prx/libc/include/exceptions/Unwind.hpp source/head/core/libs/prx/libc/include/exceptions/Unwind.hpp source/base/core/libs/prx/libkernel/CMakeLists.txt source/head/core/libs/prx/libkernel/CMakeLists.txt evidence/base/libkernel-test-registration.patch evidence/base/unwind-test-declarations.patch > evidence/base/overlay.sha256
+          test "$(git -C source/legacy status --porcelain | wc -l)" -eq 4
+          test "$(git -C source/legacy status --porcelain | sed 's/^...//' | sort | paste -sd, -)" = "core/libs/prx/libc/include/exceptions/Unwind.hpp,core/libs/prx/libc/src/exception/Unwind.cpp,core/libs/prx/libkernel/CMakeLists.txt,core/libs/tests/GuestHostCancellation.cpp"
+          grep -q 'while ((status = state.state.load(std::memory_order_acquire)) == 1)' source/legacy/core/libs/prx/libc/src/exception/Unwind.cpp
+          ! grep -q 'return expected == 2;' source/legacy/core/libs/prx/libc/src/exception/Unwind.cpp
+          ! grep -q 'while ((status = state.state.load(std::memory_order_acquire)) == 1)' source/head/core/libs/prx/libc/src/exception/Unwind.cpp
+          grep -q 'nativeHostUnwindResolverTestContenders' driver/.github/host-unwind/legacy-resolver-test-hooks.patch
+          git -C source/base diff --check
+          git -C source/legacy diff --check
+          sha256sum source/base/core/libs/tests/GuestHostCancellation.cpp source/head/core/libs/tests/GuestHostCancellation.cpp source/legacy/core/libs/tests/GuestHostCancellation.cpp source/base/core/libs/prx/libc/include/exceptions/Unwind.hpp source/head/core/libs/prx/libc/include/exceptions/Unwind.hpp source/legacy/core/libs/prx/libc/include/exceptions/Unwind.hpp source/base/core/libs/prx/libkernel/CMakeLists.txt source/head/core/libs/prx/libkernel/CMakeLists.txt source/legacy/core/libs/prx/libkernel/CMakeLists.txt driver/.github/host-unwind/legacy-resolver-test-hooks.patch > evidence/identity/fixture-and-overlay.sha256
           git -C source/base status --short > evidence/base/overlay-status.txt
+          git -C source/legacy status --short > evidence/legacy/overlay-status.txt
 
-      - name: Configure exact base focused regression
+      - name: Configure exact original base
         working-directory: source/base
-        run: |
-          set -euo pipefail
-          cmake -S . -B build $CONFIGURE -DANYPS5_ENABLE_SPIRV_TOOLS=ON > ../../evidence/base/configure.log 2>&1
+        run: cmake -S . -B build $CONFIGURE -DANYPS5_ENABLE_SPIRV_TOOLS=ON > ../../evidence/base/configure.log 2>&1
 
-      - name: Build four essential regression targets on base
+      - name: Build required base regression targets
         working-directory: source/base
-        run: |
-          set -euo pipefail
-          cmake --build build --target guest_host_cancellation_tests exception_runtime_tests exception_personality_tests exception_c_cleanup_tests --parallel 2 > ../../evidence/base/build.log 2>&1
+        run: cmake --build build --target guest_host_cancellation_tests exception_runtime_tests exception_personality_tests exception_c_cleanup_tests --parallel 2 > ../../evidence/base/build.log 2>&1
 
-      - name: Run four essential regression cases on base and require intended cancellation failure
+      - name: Run the original base red plus three controls
         working-directory: source/base
         run: |
           set -euo pipefail
           set +e
-          ctest --test-dir build --output-on-failure --timeout 120 -R '^(guest_host_cancellation|exception_runtime|exception_personality|exception_c_cleanup)$' --output-log "$GITHUB_WORKSPACE/evidence/base/ctest.log" --output-junit "$GITHUB_WORKSPACE/evidence/base/ctest.xml" > "$GITHUB_WORKSPACE/evidence/base/console.log" 2>&1
+          ctest --test-dir build --output-on-failure --timeout 120 --test-output-size-passed 1048576 --test-output-size-failed 1048576 -R '^(guest_host_cancellation|exception_runtime|exception_personality|exception_c_cleanup)$' --output-log "$GITHUB_WORKSPACE/evidence/base/ctest.log" --output-junit "$GITHUB_WORKSPACE/evidence/base/ctest.xml" > "$GITHUB_WORKSPACE/evidence/base/console.log" 2>&1
           result=$?
           set -e
+          cp build/Testing/Temporary/LastTest.log "$GITHUB_WORKSPACE/evidence/base/LastTest.log"
           printf '%s\n' "$result" > "$GITHUB_WORKSPACE/evidence/base/ctest.exitcode"
           test "$result" -ne 0
           grep -q 'guest_host_cancellation' "$GITHUB_WORKSPACE/evidence/base/ctest.log"
@@ -181,60 +215,104 @@ jobs:
           python3 - "$GITHUB_WORKSPACE/evidence/base/ctest.xml" <<'PY'
           import sys, xml.etree.ElementTree as ET
           root = ET.parse(sys.argv[1]).getroot()
-          cases = [node for node in root.iter('testcase')]
+          cases = [n for n in root.iter() if n.tag.rsplit('}', 1)[-1] == 'testcase']
           expected = {'guest_host_cancellation', 'exception_runtime', 'exception_personality', 'exception_c_cleanup'}
-          names = [case.get('name') for case in cases]
+          names = [n.get('name') for n in cases]
           if set(names) != expected or len(names) != len(expected):
-              raise SystemExit(f'base focused result set mismatch: {names!r}')
-          by_name = {case.get('name'): case for case in cases}
+              raise SystemExit(f'base result set mismatch: {names!r}')
+          by_name = {n.get('name'): n for n in cases}
           for name in expected - {'guest_host_cancellation'}:
-              if any(child.tag.rsplit('}', 1)[-1] in {'failure', 'error', 'skipped'} for child in by_name[name]):
-                  raise SystemExit(f'base control case did not pass: {name}')
-          failing = by_name['guest_host_cancellation']
-          if not any(child.tag.rsplit('}', 1)[-1] in {'failure', 'error'} for child in failing):
-              raise SystemExit('base cancellation case lacks a failure record')
-          if any(child.tag.rsplit('}', 1)[-1] == 'skipped' for case in cases for child in case):
-              raise SystemExit('base focused matrix contains a skipped case')
+              if any(c.tag.rsplit('}', 1)[-1] in {'failure', 'error', 'skipped'} for c in by_name[name]):
+                  raise SystemExit(f'base control did not pass: {name}')
+          if not any(c.tag.rsplit('}', 1)[-1] in {'failure', 'error'} for c in by_name['guest_host_cancellation']):
+              raise SystemExit('base cancellation lacks intended failure record')
+          if any(c.tag.rsplit('}', 1)[-1] == 'skipped' for n in cases for c in n):
+              raise SystemExit('base focused result contains a skip')
           PY
 
-      - name: Run cmake -S . -B build $CONFIGURE -DANYPS5_ENABLE_SPIRV_TOOLS=ON
-        working-directory: source/head
-        run: cmake -S . -B build $CONFIGURE -DANYPS5_ENABLE_SPIRV_TOOLS=ON
+      - name: Configure the previous candidate for isolated old-waiter reproduction
+        working-directory: source/legacy
+        run: cmake -S . -B build $CONFIGURE -DANYPS5_ENABLE_SPIRV_TOOLS=ON > ../../evidence/legacy/configure.log 2>&1
 
-      - name: Build four essential regression targets on candidate
-        working-directory: source/head
+      - name: Build the legacy contention regression
+        working-directory: source/legacy
+        run: cmake --build build --target guest_host_cancellation_tests --parallel 2 > ../../evidence/legacy/build.log 2>&1
+
+      - name: Require the prior unbounded waiter to fail the finite contention check
+        working-directory: source/legacy
         run: |
           set -euo pipefail
-          cmake --build build --target guest_host_cancellation_tests exception_runtime_tests exception_personality_tests exception_c_cleanup_tests --parallel 2 > "$GITHUB_WORKSPACE/evidence/head/focused-build.log" 2>&1
+          set +e
+          ctest --test-dir build --output-on-failure --timeout 20 --test-output-size-passed 1048576 --test-output-size-failed 1048576 -R '^guest_host_resolver_contention$' --output-log "$GITHUB_WORKSPACE/evidence/legacy/ctest.log" --output-junit "$GITHUB_WORKSPACE/evidence/legacy/ctest.xml" > "$GITHUB_WORKSPACE/evidence/legacy/console.log" 2>&1
+          result=$?
+          set -e
+          cp build/Testing/Temporary/LastTest.log "$GITHUB_WORKSPACE/evidence/legacy/LastTest.log"
+          printf '%s\n' "$result" > "$GITHUB_WORKSPACE/evidence/legacy/ctest.exitcode"
+          test "$result" -ne 0
+          grep -q 'contenderObserved=1 returnedBeforeOwnerRelease=0 winnerHeld=1 outputUntouchedBeforeRelease=0' "$GITHUB_WORKSPACE/evidence/legacy/LastTest.log"
+          grep -q 'assertion failed: loserReturnedBeforeRelease' "$GITHUB_WORKSPACE/evidence/legacy/LastTest.log"
+          python3 - "$GITHUB_WORKSPACE/evidence/legacy/ctest.xml" <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          root = ET.parse(sys.argv[1]).getroot()
+          cases = [n for n in root.iter() if n.tag.rsplit('}', 1)[-1] == 'testcase']
+          if len(cases) != 1 or cases[0].get('name') != 'guest_host_resolver_contention':
+              raise SystemExit(f'legacy result set mismatch: {[n.get("name") for n in cases]!r}')
+          tags = [c.tag.rsplit('}', 1)[-1] for c in cases[0]]
+          if 'failure' not in tags or any(t in {'error', 'skipped'} for t in tags):
+              raise SystemExit(f'legacy did not produce the expected assertion failure: {tags!r}')
+          PY
 
-      - name: Run four essential regression cases on candidate
+      - name: Configure exact bounded candidate
+        working-directory: source/head
+        run: cmake -S . -B build $CONFIGURE -DANYPS5_ENABLE_SPIRV_TOOLS=ON > ../../evidence/head/configure.log 2>&1
+
+      - name: Build the five essential head regression targets
+        working-directory: source/head
+        run: cmake --build build --target guest_host_cancellation_tests exception_runtime_tests exception_personality_tests exception_c_cleanup_tests --parallel 2 > ../../evidence/head/focused-build.log 2>&1
+
+      - name: Run cold cancellation, bounded contention, and three controls on head
         working-directory: source/head
         run: |
           set -euo pipefail
           set +e
-          ctest --test-dir build --output-on-failure --timeout 120 -R '^(guest_host_cancellation|exception_runtime|exception_personality|exception_c_cleanup)$' --output-log "$GITHUB_WORKSPACE/evidence/head/ctest.log" --output-junit "$GITHUB_WORKSPACE/evidence/head/ctest.xml" > "$GITHUB_WORKSPACE/evidence/head/console.log" 2>&1
+          ctest --test-dir build --output-on-failure --timeout 120 --test-output-size-passed 1048576 --test-output-size-failed 1048576 -R '^(guest_host_cancellation|guest_host_resolver_contention|exception_runtime|exception_personality|exception_c_cleanup)$' --output-log "$GITHUB_WORKSPACE/evidence/head/ctest.log" --output-junit "$GITHUB_WORKSPACE/evidence/head/ctest.xml" > "$GITHUB_WORKSPACE/evidence/head/console.log" 2>&1
           result=$?
           set -e
+          cp build/Testing/Temporary/LastTest.log "$GITHUB_WORKSPACE/evidence/head/LastTest.log"
           printf '%s\n' "$result" > "$GITHUB_WORKSPACE/evidence/head/ctest.exitcode"
           test "$result" -eq 0
-          python3 - "$GITHUB_WORKSPACE/evidence/head/ctest.xml" <<'PY'
-          import sys, xml.etree.ElementTree as ET
+          if grep -Eiq 'output (was )?truncated|truncated after' "$GITHUB_WORKSPACE/evidence/head/LastTest.log"; then
+            echo 'passed-test output was unexpectedly truncated' >&2
+            exit 1
+          fi
+          grep -q 'resolver contention: contenderObserved=1 returnedBeforeOwnerRelease=1 winnerHeld=1 outputUntouchedBeforeRelease=1 loserResult=0' "$GITHUB_WORKSPACE/evidence/head/LastTest.log"
+          python3 - "$GITHUB_WORKSPACE/evidence/head/ctest.xml" "$GITHUB_WORKSPACE/evidence/head/LastTest.log" <<'PY'
+          import re, sys, xml.etree.ElementTree as ET
           root = ET.parse(sys.argv[1]).getroot()
-          cases = [node for node in root.iter('testcase')]
-          expected = {'guest_host_cancellation', 'exception_runtime', 'exception_personality', 'exception_c_cleanup'}
-          names = [case.get('name') for case in cases]
+          cases = [n for n in root.iter() if n.tag.rsplit('}', 1)[-1] == 'testcase']
+          expected = {'guest_host_cancellation', 'guest_host_resolver_contention', 'exception_runtime', 'exception_personality', 'exception_c_cleanup'}
+          names = [n.get('name') for n in cases]
           if set(names) != expected or len(names) != len(expected):
-              raise SystemExit(f'candidate focused result set mismatch: {names!r}')
+              raise SystemExit(f'head result set mismatch: {names!r}')
           for case in cases:
-              if any(child.tag.rsplit('}', 1)[-1] in {'failure', 'error', 'skipped'} for child in case):
-                  raise SystemExit(f'candidate focused case did not pass: {case.get("name")}')
+              if any(c.tag.rsplit('}', 1)[-1] in {'failure', 'error', 'skipped'} for c in case):
+                  raise SystemExit(f'head case did not pass: {case.get("name")}')
+          log = open(sys.argv[2], encoding='utf-8', errors='replace').read()
+          events = [int(i) for i in re.findall(r'host unwind event (\d+):', log)]
+          if not events or events != list(range(len(events))):
+              raise SystemExit(f'candidate trace event lines incomplete or noncontiguous: {events!r}')
+          kinds = [int(i) for i in re.findall(r'host unwind event \d+: kind=(\d+)', log)]
+          if not any(kind == 1 for kind in kinds) or not any(kind == 2 for kind in kinds):
+              raise SystemExit(f'candidate trace lacks install/resume event lines: {kinds!r}')
+          if 'libkernel.prx' not in log or 'libgcc_s.so' not in log or 'libstdc++.so' not in log:
+              raise SystemExit('complete head log lacks recorded runtime/callsite owner names')
           PY
 
-      - name: Upload focused Linux diagnostic evidence
+      - name: Upload focused resolver and cancellation evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
-          name: host-forced-personality-focused-${{ github.run_id }}-${{ github.run_attempt }}
+          name: host-forced-personality-bounded-${{ github.run_id }}-${{ github.run_attempt }}
           path: evidence/**
           if-no-files-found: error
           retention-days: 7
