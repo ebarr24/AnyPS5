@@ -357,8 +357,9 @@ struct ImplicationKeyHash {
 
 class Implications {
 public:
-    Implications(const std::vector<Region>& regions, const BlockSet& uniform, std::uint32_t waveSize, std::size_t& work, std::size_t retainedLimit)
-        : regions(regions), uniform(uniform), waveSize(waveSize), work(work), retainedLimit(retainedLimit) {}
+    Implications(const std::vector<Region>& regions, const BlockSet& uniform, std::uint32_t waveSize, std::size_t& work,
+                 std::size_t retainedLimit, bool reuseAcrossWalks)
+        : regions(regions), uniform(uniform), waveSize(waveSize), work(work), retainedLimit(retainedLimit), reuseAcrossWalks(reuseAcrossWalks) {}
 
     void Reset(const IrValue* writeMask, bool acrossLoops) {
         if (mask != writeMask || loops != acrossLoops) retained.clear();
@@ -386,7 +387,7 @@ public:
     }
 
     void FinishWalk(bool successful) {
-        if (successful || cutoff || assumptionReads != 0u) {
+        if (!reuseAcrossWalks || successful || cutoff || assumptionReads != 0u) {
             retained.clear();
             return;
         }
@@ -446,6 +447,7 @@ private:
             if (known->second == Proof::Assumed) ++assumptionReads;
             return known->second != Proof::NotImplied;
         }
+        if (!reuseAcrossWalks) return std::nullopt;
         const auto old = retained.find(key);
         if (old == retained.end()) return std::nullopt;
         return old->second != Proof::NotImplied;
@@ -524,6 +526,7 @@ private:
     std::uint32_t waveSize;
     std::size_t& work;
     std::size_t retainedLimit;
+    bool reuseAcrossWalks;
     const IrValue* mask = nullptr;
     bool loops = false;
     bool always = false;
@@ -587,7 +590,7 @@ class MaskedLaneWalk {
 public:
     MaskedLaneWalk(const IrProgram& program, const std::vector<Region>& regions, std::uint32_t nesting = 0)
         : program(program), regions(regions), uniform(uniformEntryBlocks(program)), limit(walkLimit(program)),
-          implications(regions, uniform, program.WaveSize(), work, limit), nesting(nesting) {}
+          implications(regions, uniform, program.WaveSize(), work, limit, nesting == 0u), nesting(nesting) {}
 
     bool UnobservedWhereMasked(const IrValue& select, const IrValue* mask) {
         const bool acrossLoops = mask->HasImmediate() || regionOf(regions, mask->Parent()) == Region::Once;
