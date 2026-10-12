@@ -144,7 +144,7 @@ jobs:
             '${{ needs.eligibility.outputs.base }}' '${{ needs.eligibility.outputs.legacy }}' \
             '${{ needs.eligibility.outputs.previous }}' \
             '${{ needs.eligibility.outputs.candidate }}' > evidence/identity/run.txt
-          sha256sum driver/.github/workflows/build.yml driver/.github/host-unwind/legacy-resolver-test-hooks.patch > evidence/identity/driver-inputs.sha256
+          sha256sum driver/.github/workflows/build.yml driver/.github/host-unwind/base-observer-dtos.patch driver/.github/host-unwind/legacy-resolver-test-hooks.patch > evidence/identity/driver-inputs.sha256
           test "$(git -C source/base rev-parse HEAD)" = '${{ needs.eligibility.outputs.base }}'
           test "$(git -C source/legacy rev-parse HEAD)" = '${{ needs.eligibility.outputs.legacy }}'
           test "$(git -C source/previous rev-parse HEAD)" = '${{ needs.eligibility.outputs.previous }}'
@@ -174,7 +174,7 @@ jobs:
           git -C source/head log -1 --format=%H
           sha256sum driver/.github/host-unwind/legacy-resolver-test-hooks.patch
 
-      - name: Apply identical public fixture to original base and legacy waiter
+      - name: Apply shared fixture and base observer declaration shim
         run: |
           set -euo pipefail
           test ! -e source/base/core/libs/tests/GuestHostCancellation.cpp
@@ -183,6 +183,10 @@ jobs:
           test -s evidence/base/libkernel-test-registration.patch
           git -C source/base apply --check "$GITHUB_WORKSPACE/evidence/base/libkernel-test-registration.patch"
           git -C source/base apply "$GITHUB_WORKSPACE/evidence/base/libkernel-test-registration.patch"
+          cp driver/.github/host-unwind/base-observer-dtos.patch evidence/base/base-observer-dtos.patch
+          test -s evidence/base/base-observer-dtos.patch
+          git -C source/base apply --check "$GITHUB_WORKSPACE/evidence/base/base-observer-dtos.patch"
+          git -C source/base apply "$GITHUB_WORKSPACE/evidence/base/base-observer-dtos.patch"
           sed -i 's/ APS5_HOST_UNWIND_TARGET_PAIR_MARKER=1//g' source/base/core/libs/prx/libkernel/CMakeLists.txt
           cp source/head/core/libs/tests/GuestHostCancellation.cpp source/legacy/core/libs/tests/GuestHostCancellation.cpp
           cp source/head/core/libs/prx/libkernel/CMakeLists.txt source/legacy/core/libs/prx/libkernel/CMakeLists.txt
@@ -199,8 +203,8 @@ jobs:
           ! grep -q APS5_HOST_UNWIND_TARGET_PAIR_MARKER source/legacy/core/libs/prx/libkernel/CMakeLists.txt
           ! grep -q APS5_HOST_UNWIND_TARGET_PAIR_MARKER source/previous/core/libs/prx/libkernel/CMakeLists.txt
           grep -q APS5_HOST_UNWIND_TARGET_PAIR_MARKER source/head/core/libs/prx/libkernel/CMakeLists.txt
-          test "$(git -C source/base status --porcelain | wc -l)" -eq 2
-          test "$(git -C source/base status --porcelain | sed 's/^...//' | sort | paste -sd, -)" = "core/libs/prx/libkernel/CMakeLists.txt,core/libs/tests/GuestHostCancellation.cpp"
+          test "$(git -C source/base status --porcelain | wc -l)" -eq 3
+          test "$(git -C source/base status --porcelain | sed 's/^...//' | sort | paste -sd, -)" = "core/libs/prx/libc/include/exceptions/Unwind.hpp,core/libs/prx/libkernel/CMakeLists.txt,core/libs/tests/GuestHostCancellation.cpp"
           test "$(git -C source/legacy status --porcelain | wc -l)" -eq 3
           test "$(git -C source/legacy status --porcelain | sed 's/^...//' | sort | paste -sd, -)" = "core/libs/prx/libc/src/exception/Unwind.cpp,core/libs/prx/libkernel/CMakeLists.txt,core/libs/tests/GuestHostCancellation.cpp"
           test "$(git -C source/previous status --porcelain | wc -l)" -eq 2
@@ -210,11 +214,16 @@ jobs:
           ! grep -q 'while ((status = state.state.load(std::memory_order_acquire)) == 1)' source/head/core/libs/prx/libc/src/exception/Unwind.cpp
           grep -q 'nativeHostUnwindResolverTestGate' source/previous/core/libs/prx/libc/src/exception/Unwind.cpp
           grep -q 'return expected == 2;' source/previous/core/libs/prx/libc/src/exception/Unwind.cpp
+          grep -q 'struct HostUnwindTargetInfo_nid_no_patch' source/base/core/libs/prx/libc/include/exceptions/Unwind.hpp
+          grep -q 'struct HostUnwindTraceBuffer_nid_no_patch' source/base/core/libs/prx/libc/include/exceptions/Unwind.hpp
+          grep -q 'enum class HostUnwindMarkerResult_nid_no_patch' source/base/core/libs/prx/libc/include/exceptions/Unwind.hpp
+          ! grep -q '_CallNativeHostPersonality_nid_no_patch' source/base/core/libs/prx/libc/include/exceptions/Unwind.hpp
+          ! grep -q 'contenderLocal' source/base/core/libs/prx/libc/include/exceptions/Unwind.hpp
           grep -q 'nativeHostUnwindResolverTestContenders' driver/.github/host-unwind/legacy-resolver-test-hooks.patch
           git -C source/base diff --check
           git -C source/legacy diff --check
           git -C source/previous diff --check
-          sha256sum evidence/base/libkernel-test-registration.patch source/base/core/libs/tests/GuestHostCancellation.cpp source/head/core/libs/tests/GuestHostCancellation.cpp source/legacy/core/libs/tests/GuestHostCancellation.cpp source/previous/core/libs/tests/GuestHostCancellation.cpp source/base/core/libs/prx/libkernel/CMakeLists.txt source/head/core/libs/prx/libkernel/CMakeLists.txt source/legacy/core/libs/prx/libkernel/CMakeLists.txt source/previous/core/libs/prx/libkernel/CMakeLists.txt source/legacy/core/libs/prx/libc/src/exception/Unwind.cpp source/previous/core/libs/prx/libc/src/exception/Unwind.cpp driver/.github/host-unwind/legacy-resolver-test-hooks.patch > evidence/identity/fixture-and-overlay.sha256
+          sha256sum evidence/base/libkernel-test-registration.patch evidence/base/base-observer-dtos.patch driver/.github/host-unwind/base-observer-dtos.patch source/base/core/libs/prx/libc/include/exceptions/Unwind.hpp source/base/core/libs/tests/GuestHostCancellation.cpp source/head/core/libs/tests/GuestHostCancellation.cpp source/legacy/core/libs/tests/GuestHostCancellation.cpp source/previous/core/libs/tests/GuestHostCancellation.cpp source/base/core/libs/prx/libkernel/CMakeLists.txt source/head/core/libs/prx/libkernel/CMakeLists.txt source/legacy/core/libs/prx/libkernel/CMakeLists.txt source/previous/core/libs/prx/libkernel/CMakeLists.txt source/legacy/core/libs/prx/libc/src/exception/Unwind.cpp source/previous/core/libs/prx/libc/src/exception/Unwind.cpp driver/.github/host-unwind/legacy-resolver-test-hooks.patch > evidence/identity/fixture-and-overlay.sha256
           git -C source/base status --short > evidence/base/overlay-status.txt
           git -C source/legacy status --short > evidence/legacy/overlay-status.txt
           git -C source/previous status --short > evidence/previous/overlay-status.txt

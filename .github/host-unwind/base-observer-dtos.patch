@@ -1,0 +1,56 @@
+diff --git a/core/libs/prx/libc/include/exceptions/Unwind.hpp b/core/libs/prx/libc/include/exceptions/Unwind.hpp
+index 4afac5151..000000000 100644
+--- a/core/libs/prx/libc/include/exceptions/Unwind.hpp
++++ b/core/libs/prx/libc/include/exceptions/Unwind.hpp
+@@ -95,5 +95,51 @@ extern "C" {
+     _Unwind_Reason_Code APS5_VABI _Unwind_Resume_or_Rethrow_nid_postfix(_Unwind_Exception*);
+     void APS5_VABI _Unwind_DeleteException_nid_postfix(_Unwind_Exception*);
+ }
+ 
++// Test-only observer DTOs shared with the frozen Linux cancellation fixture.
++// This compatibility shim adds declarations only; base unwind implementations
++// and their exported function signatures remain unchanged.
++#if defined(__linux__)
++struct HostUnwindTargetInfo_nid_no_patch {
++    LibcUnwind::Word personality {};
++    LibcUnwind::Word personalityOwner {};
++    const char* personalityOwnerName {};
++    LibcUnwind::Word resume {};
++    LibcUnwind::Word resumeOwner {};
++    const char* resumeOwnerName {};
++};
++
++#if defined(APS5_HOST_UNWIND_TESTING)
++enum class HostUnwindTraceKind_nid_no_patch : unsigned {
++    Personality,
++    MarkerInstalled,
++    ResumeMatched,
++};
++
++struct HostUnwindTraceEvent_nid_no_patch {
++    HostUnwindTraceKind_nid_no_patch kind {};
++    _Unwind_Action actions {};
++    _Unwind_Reason_Code result {};
++    std::uint64_t exceptionClass {};
++    LibcUnwind::Word exception {};
++    LibcUnwind::Word target {};
++    LibcUnwind::Word owner {};
++    LibcUnwind::Word callSite {};
++};
++
++struct HostUnwindTraceBuffer_nid_no_patch {
++    static constexpr unsigned Capacity = 64;
++    HostUnwindTraceEvent_nid_no_patch events[Capacity] {};
++    unsigned count {};
++    bool overflow {};
++};
++#endif
++
++enum class HostUnwindMarkerResult_nid_no_patch : unsigned {
++    NoMarker,
++    Marked,
++    Rejected,
++};
++#endif
++
+ #endif
