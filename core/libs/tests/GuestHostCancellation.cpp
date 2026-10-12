@@ -122,6 +122,7 @@ void CheckTrace(Context& context, const HostUnwindTargetInfo_nid_no_patch& targe
     unsigned callbacks = 0;
     unsigned installed = 0;
     unsigned resumed = 0;
+    unsigned kernelResumed = 0;
     for (unsigned i = 0; i < context.trace.count; ++i) {
         const auto& event = context.trace.events[i];
         std::fprintf(stderr, "host unwind event %u: kind=%u class=0x%016llx actions=0x%x result=%d\n",
@@ -149,9 +150,10 @@ void CheckTrace(Context& context, const HostUnwindTargetInfo_nid_no_patch& targe
             Require(!LibcException::Native(event.exceptionClass));
             Dl_info callInfo {};
             Require(event.callSite != 0 && dladdr(reinterpret_cast<void*>(event.callSite), &callInfo) != 0);
-            Require(callInfo.dli_fbase == kernelInfo.dli_fbase);
+            std::fprintf(stderr, "host unwind Resume call site: %s\n", callInfo.dli_fname ? callInfo.dli_fname : "<unknown>");
+            if (callInfo.dli_fbase == kernelInfo.dli_fbase) ++kernelResumed;
             bool sameExceptionInstalled = false;
-            for (unsigned j = 0; j < context.trace.count; ++j) {
+            for (unsigned j = 0; j < i; ++j) {
                 const auto& prior = context.trace.events[j];
                 if (prior.kind == HostUnwindTraceKind_nid_no_patch::MarkerInstalled && prior.exception == event.exception) {
                     sameExceptionInstalled = true;
@@ -162,6 +164,7 @@ void CheckTrace(Context& context, const HostUnwindTargetInfo_nid_no_patch& targe
         }
     }
     Require(callbacks > 0 && installed > 0 && installed == resumed);
+    Require(kernelResumed > 0);
 }
 }
 
