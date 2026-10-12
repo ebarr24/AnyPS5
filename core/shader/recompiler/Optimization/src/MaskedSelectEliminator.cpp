@@ -616,6 +616,7 @@ public:
                     nested.limit = work;
                     const bool unobserved = nested.UnobservedWhereMasked(*user, user->Argument(1)->Resolve());
                     work = nested.work;
+                    if (work == 0u) implications.MarkWorkCutoff();
                     if (unobserved) continue;
                 }
                 if (!user->IsPhi() && !isLaneLocal(user->Opcode()) && !isExplicitLodSample(program, *user) && !(quadMasked && user->Opcode() == IrOpcode::ImageSampleRaw)) {
