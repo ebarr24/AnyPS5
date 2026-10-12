@@ -25,7 +25,7 @@ jobs:
         id: gate
         env:
           BASE_SHA: 325e0a8bdd44c8f1868f41c7190d9dc5cae0467e
-          CANDIDATE_SHA: e5f6ad95a0a65fb416a3d5018d647696256f4f77
+          CANDIDATE_SHA: 38b92e01991b8848b5e4edeac58dee4fb1cdfd36
           PR_SCHEMA_INPUT: ${{ inputs.pr }}
           TRIGGERING_ACTOR: ${{ github.triggering_actor }}
         with:
