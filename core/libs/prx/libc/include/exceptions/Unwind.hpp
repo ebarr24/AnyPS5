@@ -106,4 +106,55 @@ extern "C" {
     void APS5_VABI _Unwind_DeleteException_nid_postfix(_Unwind_Exception*);
 }
 
+#if defined(__linux__)
+struct HostUnwindTargetInfo_nid_no_patch {
+    LibcUnwind::Word personality {};
+    LibcUnwind::Word personalityOwner {};
+    const char* personalityOwnerName {};
+    LibcUnwind::Word resume {};
+    LibcUnwind::Word resumeOwner {};
+    const char* resumeOwnerName {};
+};
+
+enum class HostUnwindTraceKind_nid_no_patch : unsigned {
+    Personality,
+    MarkerInstalled,
+    ResumeMatched,
+};
+
+struct HostUnwindTraceEvent_nid_no_patch {
+    HostUnwindTraceKind_nid_no_patch kind {};
+    _Unwind_Action actions {};
+    _Unwind_Reason_Code result {};
+    LibcUnwind::Word exception {};
+    LibcUnwind::Word target {};
+    LibcUnwind::Word owner {};
+    LibcUnwind::Word callSite {};
+};
+
+struct HostUnwindTraceBuffer_nid_no_patch {
+    static constexpr unsigned Capacity = 64;
+    HostUnwindTraceEvent_nid_no_patch events[Capacity] {};
+    unsigned count {};
+    bool overflow {};
+};
+
+enum class HostUnwindMarkerResult_nid_no_patch : unsigned {
+    NoMarker,
+    Marked,
+    Rejected,
+};
+
+extern "C" {
+    bool APS5_VABI _ResolveNativeHostUnwindTargets_nid_no_patch(HostUnwindTargetInfo_nid_no_patch*);
+    void APS5_VABI _SetHostUnwindTraceBuffer_nid_no_patch(HostUnwindTraceBuffer_nid_no_patch*);
+    void APS5_VABI _RecordHostUnwindTrace_nid_no_patch(const HostUnwindTraceEvent_nid_no_patch*);
+    HostUnwindMarkerResult_nid_no_patch APS5_VABI _MarkNativeForcedUnwind_nid_no_patch(_Unwind_Exception*, _Unwind_Reason_Code);
+    bool APS5_VABI _ConsumeNativeForcedUnwindMarker_nid_no_patch(_Unwind_Exception*);
+    void APS5_VABI _ResetNativeForcedUnwindMarkerForTest_nid_no_patch();
+    _Unwind_Reason_Code APS5_VABI _CallNativeHostPersonality_nid_no_patch(int, _Unwind_Action, std::uint64_t, _Unwind_Exception*, _Unwind_Context*);
+    [[noreturn]] void APS5_VABI _CallNativeHostResume_nid_no_patch(_Unwind_Exception*);
+}
+#endif
+
 #endif

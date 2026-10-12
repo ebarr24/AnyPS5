@@ -106,6 +106,25 @@ extern "C" _Unwind_Reason_Code __gxx_personality_v0(
     int version, _Unwind_Action actions, std::uint64_t exceptionClass,
     _Unwind_Exception* exception, _Unwind_Context* context
 ) {
+#if defined(__linux__)
+    if (!LibcException::Native(exceptionClass) &&
+        (actions & (_UA_FORCE_UNWIND | _UA_CLEANUP_PHASE)) == (_UA_FORCE_UNWIND | _UA_CLEANUP_PHASE) &&
+        !(actions & _UA_SEARCH_PHASE)) {
+        const auto result = _CallNativeHostPersonality_nid_no_patch(version, actions, exceptionClass, exception, context);
+        const auto marker = _MarkNativeForcedUnwind_nid_no_patch(exception, result);
+        if (marker == HostUnwindMarkerResult_nid_no_patch::Rejected) return _URC_FATAL_PHASE2_ERROR;
+        if (marker == HostUnwindMarkerResult_nid_no_patch::Marked) {
+            HostUnwindTargetInfo_nid_no_patch targets {};
+            if (!_ResolveNativeHostUnwindTargets_nid_no_patch(&targets)) return _URC_FATAL_PHASE2_ERROR;
+            const HostUnwindTraceEvent_nid_no_patch event {
+                HostUnwindTraceKind_nid_no_patch::MarkerInstalled, actions, result,
+                reinterpret_cast<LibcUnwind::Word>(exception), targets.personality, targets.personalityOwner, 0
+            };
+            _RecordHostUnwindTrace_nid_no_patch(&event);
+        }
+        return result;
+    }
+#endif
     return __gxx_personality_v0_nid_postfix(version, actions, exceptionClass, exception, context);
 }
 
