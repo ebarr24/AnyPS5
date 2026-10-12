@@ -33,7 +33,7 @@ jobs:
               throw new Error('The required historical 3391 workflow input is schema-only and must not select a PR');
             }
             const { owner, repo } = context.repo;
-            if (owner !== 'ebarr24' || repo !== 'AnyPS5' || context.ref !== 'refs/heads/phase-observer-cancel-unwind-r7') {
+            if (owner !== 'ebarr24' || repo !== 'AnyPS5' || context.ref !== 'refs/heads/phase-observer-cancel-unwind-r8') {
               throw new Error('Dispatch is restricted to the isolated ebarr24/AnyPS5 diagnostic branch');
             }
             const { data: repository } = await github.rest.repos.get({ owner, repo });
@@ -112,7 +112,7 @@ jobs:
 
       - uses: hendrikmuhs/ccache-action@v1.2.24
         with:
-          key: private-cancel-unwind-r7
+          key: private-cancel-unwind-r8
           save: false
           evict-old-files: job
 
@@ -459,15 +459,28 @@ jobs:
           env = os.environ.copy()
           for assignment in target['environment']:
               key, value = assignment.split('=', 1); env[key] = value
-          command = ['gdb', '-batch', '-ex', 'set pagination off', '-ex', 'set debuginfod enabled off', '-ex', 'run',
-                     '-ex', 'printf \"=== selected SIGSEGV thread frame 0 ===\\n\"', '-ex', 'p $_siginfo',
-                     '-ex', 'p/x $_siginfo._sifields._sigfault.si_addr', '-ex', 'info threads', '-ex', 'info registers',
-                     '-ex', 'x/i $pc', '-ex', 'x/8i $pc-16', '-ex', 'disassemble /r $pc-16,$pc+32',
-                     '-ex', 'frame 0', '-ex', 'info args', '-ex', 'info locals',
-                     '-ex', 'p/x encoding', '-ex', 'p/x text', '-ex', 'p/x function', '-ex', 'p/x data',
-                     '-ex', 'p/x p', '-ex', 'p/x value', '-ex', 'x/gx p', '-ex', 'info symbol $pc',
-                     '-ex', 'info line *$pc', '-ex', 'info sharedlibrary', '-ex', 'info proc mappings',
-                     '-ex', 'info files', '-ex', 'bt 2', '-ex', 'frame 1', '-ex', 'info args', '-ex', 'info locals', '--args', *args]
+          command = [
+              'gdb', '-batch', '-ex', 'set pagination off', '-ex', 'set debuginfod enabled off', '-ex', 'run',
+              '-ex', 'printf "=== selected SIGSEGV thread frame 0 ===\\n"', '-ex', 'p $_siginfo',
+              '-ex', 'p/x $_siginfo._sifields._sigfault.si_addr', '-ex', 'info threads', '-ex', 'info registers',
+              '-ex', 'x/i $pc', '-ex', 'x/8i $pc-16', '-ex', 'disassemble /r $pc-16,$pc+32',
+              '-ex', 'frame 0', '-ex', 'info args', '-ex', 'info locals',
+              '-ex', 'p/x encoding', '-ex', 'p/x text', '-ex', 'p/x function', '-ex', 'p/x data',
+              '-ex', 'p/x p', '-ex', 'p/x location', '-ex', 'p/x value',
+              '-ex', 'x/16bx p-8', '-ex', 'x/8bx p', '-ex', 'x/gx p', '-ex', 'info symbol p',
+              '-ex', 'info symbol $pc', '-ex', 'info line *$pc', '-ex', 'info sharedlibrary',
+              '-ex', 'info proc mappings', '-ex', 'info files',
+              '-ex', 'frame 1', '-ex', 'info args',
+              '-ex', 'p/x context->lsda', '-ex', 'p/x context->region', '-ex', 'p/x context->textBase',
+              '-ex', 'p/x context->dataBase', '-ex', 'p/x context->cfa', '-ex', 'p/x context->registers[16]',
+              '-ex', 'p/x context->personality', '-ex', 'info symbol context->personality',
+              '-ex', 'p context->signalFrame', '-ex', 'p/x actions', '-ex', 'p/x exceptionClass',
+              '-ex', 'p/x exception', '-ex', 'info symbol context->lsda', '-ex', 'info symbol context->region',
+              '-ex', 'info symbol context->textBase', '-ex', 'info symbol context->dataBase',
+              '-ex', 'bt 3',
+              '-ex', 'frame 2', '-ex', 'info frame', '-ex', 'info args', '-ex', 'info symbol $pc',
+              '-ex', 'x/8i $pc-16', '--args', *args
+          ]
           wrapped = ['timeout', '--signal=TERM', '--kill-after=5s', '20s', *command]
           (out / 'invocation.json').write_text(json.dumps({
               **context, 'command': wrapped, 'debuggerCommand': command, 'timeoutSeconds': 20,
@@ -519,7 +532,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
-          name: private-cancel-unwind-r7-${{ github.run_id }}-${{ github.run_attempt }}
+          name: private-cancel-unwind-r8-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             evidence/**
             source/base414/build/Testing/Temporary/LastTest.log
