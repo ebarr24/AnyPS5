@@ -24,7 +24,7 @@ jobs:
       - uses: actions/github-script@v8
         id: gate
         env:
-          CANDIDATE_SHA: 4cc179cc0b6f4d23f0bbe715170956d8285e1dfb
+          CANDIDATE_SHA: e7f391f4de35969be03184ffa65f3240c0130a8d
           PR_SCHEMA_INPUT: ${{ inputs.pr }}
           TRIGGERING_ACTOR: ${{ github.triggering_actor }}
         with:
@@ -63,7 +63,7 @@ jobs:
           save: false
           evict-old-files: job
       - name: Install lavapipe for the GPU execution tests
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers libpipewire-0.3-dev libpulse-dev libasound2-dev
       - name: Run cmake -S . -B build $CONFIGURE -DANYPS5_ENABLE_SPIRV_TOOLS=ON
         env:
           CONFIGURE: >-
