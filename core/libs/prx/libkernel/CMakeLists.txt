@@ -1146,4 +1146,20 @@ if(BUILD_TESTING)
         set_tests_properties(guest_pthread_rename PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>")
     endif()
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_compile_definitions(libc PRIVATE
+            APS5_HOST_UNWIND_TESTING=1 APS5_HOST_UNWIND_TARGET_PAIR_MARKER=1)
+        add_test_executable(guest_host_cancellation_tests ${LIBS_INCLUDE_DIR}/tests/GuestHostCancellation.cpp)
+        target_compile_definitions(guest_host_cancellation_tests PRIVATE
+            APS5_HOST_UNWIND_TESTING=1 APS5_HOST_UNWIND_TARGET_PAIR_MARKER=1)
+        target_include_directories(guest_host_cancellation_tests PRIVATE ${LIBS_INCLUDE_DIR})
+        target_link_libraries(guest_host_cancellation_tests PRIVATE libkernel libc ${CMAKE_DL_LIBS})
+        add_test(NAME guest_host_cancellation COMMAND guest_host_cancellation_tests)
+        set_tests_properties(guest_host_cancellation PROPERTIES TIMEOUT 20)
+        add_test(NAME guest_host_resolver_contention COMMAND guest_host_cancellation_tests --resolver-contention)
+        set_tests_properties(guest_host_resolver_contention PROPERTIES TIMEOUT 20)
+        add_test(NAME guest_host_concurrent_cold_cancellation
+            COMMAND guest_host_cancellation_tests --concurrent-cold-cancellation)
+        set_tests_properties(guest_host_concurrent_cold_cancellation PROPERTIES TIMEOUT 20)
+    endif()
 endif()
