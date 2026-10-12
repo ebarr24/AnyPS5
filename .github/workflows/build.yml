@@ -1,15 +1,10 @@
 name: Build
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-    types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
       pr:
-        description: Pull request number to build
+        description: Historical workflow-schema input only; does not select a PR
         required: true
         type: string
 
@@ -17,8 +12,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: build-${{ github.event_name }}-${{ github.event.pull_request.number || inputs.pr || github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'push' }}
+  group: host-personality-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   CONFIGURE: >-
@@ -28,273 +23,260 @@ env:
 
 jobs:
   eligibility:
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
       pull-requests: read
     outputs:
-      sha: ${{ steps.gate.outputs.sha }}
-      pr: ${{ steps.gate.outputs.pr }}
-      head: ${{ steps.gate.outputs.head }}
-      relinker: ${{ steps.gate.outputs.relinker }}
-      full: ${{ steps.gate.outputs.full }}
+      base: ${{ steps.gate.outputs.base }}
+      candidate: ${{ steps.gate.outputs.candidate }}
     steps:
       - uses: actions/github-script@v8
         id: gate
         env:
-          PR_NUMBER: ${{ inputs.pr }}
+          PR_SCHEMA_INPUT: ${{ inputs.pr }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
         with:
           script: |
-            if (context.eventName === 'push') {
-              if (context.ref !== 'refs/heads/main') {
-                throw new Error('Automatic full builds only run on main');
-              }
-              core.setOutput('sha', context.sha);
-              core.setOutput('pr', '');
-              core.setOutput('head', '');
-              core.setOutput('relinker', true);
-              core.setOutput('full', true);
-              await core.summary.addRaw(`Building main at ${context.sha}: all builds and tests enabled`).write();
-              return;
+            if (!/^[1-9][0-9]*$/.test(process.env.PR_SCHEMA_INPUT) || process.env.PR_SCHEMA_INPUT !== '3391') {
+              throw new Error('The required historical 3391 workflow input is schema-only and must not select a PR');
             }
             const { owner, repo } = context.repo;
-            const manual = context.eventName === 'workflow_dispatch';
-            if (manual) {
-              for (const username of new Set([context.actor, process.env.GITHUB_TRIGGERING_ACTOR])) {
-                const { data } = await github.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username });
-                if (!['write', 'maintain', 'admin'].includes(data.permission)) {
-                  throw new Error('Only collaborators with write access can start or rerun builds');
-                }
+            if (owner !== 'ebarr24' || repo !== 'AnyPS5' || context.ref !== 'refs/heads/phase-observer-host-personality-9aa') {
+              throw new Error('Dispatch is restricted to the isolated ebarr24/AnyPS5 diagnostic branch');
+            }
+            const { data: repository } = await github.rest.repos.get({ owner, repo });
+            if (!repository.fork || repository.parent?.full_name !== 'boykopovar/AnyPS5') {
+              throw new Error('The workflow may run only on the configured AnyPS5 fork');
+            }
+            for (const username of new Set([context.actor, process.env.TRIGGERING_ACTOR])) {
+              const { data } = await github.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username });
+              if (!['write', 'maintain', 'admin'].includes(data.permission)) {
+                throw new Error('Both the actor and triggering actor must have write access');
               }
-              if (!/^[1-9][0-9]*$/.test(process.env.PR_NUMBER)) {
-                throw new Error('Enter a positive pull request number');
-              }
             }
-            const pull_number = manual ? Number(process.env.PR_NUMBER) : context.payload.pull_request.number;
-            if (!Number.isSafeInteger(pull_number) || pull_number < 1) {
-              throw new Error('Invalid pull request number');
+            const baseSha = '9aa5fd290007d816bfed6970ee259f9baaa0e24e';
+            const candidateSha = '824cad55faa8d43dc461ae786da62e76d383aff4';
+            for (const sha of [baseSha, candidateSha]) {
+              const { data } = await github.rest.repos.getCommit({ owner, repo, ref: sha });
+              if (data.sha !== sha) throw new Error(`Pinned source commit unavailable: ${sha}`);
             }
-            let { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number });
-            for (let attempt = 0; pr.mergeable === null && attempt < 10; ++attempt) {
-              await new Promise((resolve) => setTimeout(resolve, 3000));
-              ({ data: pr } = await github.rest.pulls.get({ owner, repo, pull_number }));
-            }
-            if (pr.state !== 'open' || pr.base.ref !== 'main') {
-              throw new Error('The pull request must be open and target main');
-            }
-            if (!manual && pr.head.sha !== context.payload.pull_request.head.sha) {
-              throw new Error('The pull request has newer commits; use the latest run');
-            }
-            if (pr.mergeable === false) {
-              throw new Error('The pull request does not merge cleanly into main; rebase it first');
-            }
-            let relinker = manual;
-            if (!manual) {
-              const { data: commits } = await github.rest.repos.listCommits({
-                owner, repo, sha: 'main', author: pr.user.login, per_page: 1
-              });
-              relinker = commits.length > 0;
-            }
-            const { data: main } = await github.rest.repos.getBranch({ owner, repo, branch: 'main' });
-            core.setOutput('sha', main.commit.sha);
-            core.setOutput('pr', String(pull_number));
-            core.setOutput('head', pr.head.sha);
-            core.setOutput('relinker', relinker);
-            core.setOutput('full', manual);
-            core.info(`PR #${pull_number} at ${pr.head.sha} merged into main at ${main.commit.sha}`);
-            await core.summary.addRaw(
-              `PR #${pull_number} at ${pr.head.sha} merged into main at ${main.commit.sha}: full builds ${manual ? 'enabled' : 'disabled'}, ` +
-              `relinker ${relinker ? 'enabled' : 'skipped because the author has no commit in main'}`
-            ).write();
-
-  relinker:
-    needs: eligibility
-    if: ${{ needs.eligibility.outputs.relinker == 'true' }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            compiler: g++
-          - os: windows-latest
-            compiler: g++
-          - os: macos-latest
-            compiler: clang++
-    env:
-      WINLIBS_RELEASE: 15.2.0posix-14.0.0-ucrt-r7
-      WINLIBS_ZIP: winlibs-x86_64-posix-seh-gcc-15.2.0-mingw-w64ucrt-14.0.0-r7.zip
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.eligibility.outputs.sha }}
-          persist-credentials: false
-      - name: Merge the pull request into main
-        if: ${{ needs.eligibility.outputs.head != '' }}
-        shell: bash
-        env:
-          PR_NUMBER: ${{ needs.eligibility.outputs.pr }}
-          PR_HEAD: ${{ needs.eligibility.outputs.head }}
-        run: |
-          git fetch --no-tags --unshallow origin "refs/pull/$PR_NUMBER/head"
-          if [ "$(git rev-parse FETCH_HEAD)" != "$PR_HEAD" ]; then echo "::error::The pull request has newer commits; start a new build"; exit 1; fi
-          if ! git -c user.name=ci -c user.email=ci@localhost merge --no-ff --no-edit FETCH_HEAD; then echo "::error::The pull request does not merge cleanly into main; rebase it first"; exit 1; fi
-      - if: runner.os == 'Windows'
-        id: toolchain
-        uses: actions/cache@v6
-        with:
-          path: C:\winlibs
-          key: ${{ env.WINLIBS_ZIP }}
-      - if: runner.os == 'Windows' && steps.toolchain.outputs.cache-hit != 'true'
-        run: |
-          curl -sSfL -o "$RUNNER_TEMP/winlibs.zip" "https://github.com/brechtsanders/winlibs_mingw/releases/download/$WINLIBS_RELEASE/$WINLIBS_ZIP"
-          7z x "$RUNNER_TEMP/winlibs.zip" -oC:/winlibs > /dev/null
-      - if: runner.os == 'Windows'
-        run: echo 'C:\winlibs\mingw64\bin' >> "$GITHUB_PATH"
-      - run: cmake -S . -B build-relinker -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} -DANYPS5_RELINKER_ONLY=ON -DBUILD_TESTING=ON
-      - run: cmake --build build-relinker --parallel 3
-      - run: ctest --test-dir build-relinker --output-on-failure --timeout 120
-
-  register-context:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-15-intel]
-        configuration: [Debug, Release]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v7
-      - run: cmake -S core/libs/tests/register_context -B build/register-context -DCMAKE_BUILD_TYPE=${{ matrix.configuration }}
-      - run: cmake --build build/register-context --parallel
-      - run: ctest --test-dir build/register-context --output-on-failure --repeat until-fail:3 --no-tests=error
-
-  write-watch:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-15-intel, macos-15]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v7
-      - run: cmake -S core/libs/tests/write_watch -B build/write-watch -DCMAKE_BUILD_TYPE=Release
-      - run: cmake --build build/write-watch --parallel
-      - run: ctest --test-dir build/write-watch --output-on-failure --repeat until-fail:3 --no-tests=error
+            core.setOutput('base', baseSha);
+            core.setOutput('candidate', candidateSha);
+            core.info('The 3391 input is schema-only; no PR is queried, selected, or merged.');
+            await core.summary.addRaw(`Linux host forced-unwind regression: base ${baseSha}, candidate ${candidateSha}; no PR selected.`).write();
 
   linux:
     needs: eligibility
-    if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && needs.eligibility.outputs.full == 'true' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.eligibility.outputs.sha }}
-          persist-credentials: false
-          submodules: true
-      - name: Merge the pull request into main
-        if: ${{ needs.eligibility.outputs.head != '' }}
-        shell: bash
-        env:
-          PR_NUMBER: ${{ needs.eligibility.outputs.pr }}
-          PR_HEAD: ${{ needs.eligibility.outputs.head }}
-        run: |
-          git fetch --no-tags --unshallow origin "refs/pull/$PR_NUMBER/head"
-          if [ "$(git rev-parse FETCH_HEAD)" != "$PR_HEAD" ]; then echo "::error::The pull request has newer commits; start a new build"; exit 1; fi
-          if ! git -c user.name=ci -c user.email=ci@localhost merge --no-ff --no-edit FETCH_HEAD; then echo "::error::The pull request does not merge cleanly into main; rebase it first"; exit 1; fi
-          git submodule update --init --recursive
-      - uses: hendrikmuhs/ccache-action@v1.2.24
-        with:
-          key: linux
-          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-          evict-old-files: job
-      - name: Install lavapipe for the GPU execution tests and the audio development files
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers libpipewire-0.3-dev libpulse-dev libasound2-dev
-      - run: cmake -S . -B build $CONFIGURE -DANYPS5_ENABLE_SPIRV_TOOLS=ON
-      - name: Check that every test executable is registered with ctest
-        run: python3 tools/check_test_registration.py build
-      - run: cmake --build build
-      - run: cmake --build build --target libs
-      - run: ctest --test-dir build --output-on-failure --timeout 120 --parallel 4 --output-log ctest.log --output-junit ctest.xml
-        env:
-          ANYPS5_REQUIRE_VULKAN: 1
-          GALLIUM_OVERRIDE_CPU_CAPS: avx
-      - run: python3 tools/check_skips.py build/ctest.xml
-      - name: Report tests slower than 30 s
-        if: ${{ !cancelled() }}
-        shell: bash
-        run: |
-          [ -f ctest.log ] || exit 0
-          awk '/Test +#[0-9]+: / && $NF == "sec" { for (i = 1; i <= NF; i++) if ($i ~ /^#[0-9]+:$/) name = $(i + 1); t = $(NF - 1) + 0; if (t > max[name]) max[name] = t }
-            END { for (name in max) if (max[name] > 30) printf "::warning title=Slow test::%s took %.1f s on %s; tests must finish in 30 s (CONTRIBUTING.md)\n", name, max[name], ENVIRON["RUNNER_OS"] }' ctest.log
-
-  windows:
-    needs: eligibility
-    if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && needs.eligibility.outputs.full == 'true' }}
-    runs-on: windows-latest
-    timeout-minutes: 45
-    env:
-      WINLIBS_RELEASE: 15.2.0posix-14.0.0-ucrt-r7
-      WINLIBS_ZIP: winlibs-x86_64-posix-seh-gcc-15.2.0-mingw-w64ucrt-14.0.0-r7.zip
-      SSL_CERT_FILE: C:\Program Files\Git\mingw64\etc\ssl\certs\ca-bundle.crt
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     defaults:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout frozen diagnostic driver
+        uses: actions/checkout@v7
         with:
-          ref: ${{ needs.eligibility.outputs.sha }}
+          ref: ${{ github.sha }}
+          path: driver
+          fetch-depth: 0
           persist-credentials: false
-          submodules: true
-      - name: Merge the pull request into main
-        if: ${{ needs.eligibility.outputs.head != '' }}
-        shell: bash
-        env:
-          PR_NUMBER: ${{ needs.eligibility.outputs.pr }}
-          PR_HEAD: ${{ needs.eligibility.outputs.head }}
-        run: |
-          git fetch --no-tags --unshallow origin "refs/pull/$PR_NUMBER/head"
-          if [ "$(git rev-parse FETCH_HEAD)" != "$PR_HEAD" ]; then echo "::error::The pull request has newer commits; start a new build"; exit 1; fi
-          if ! git -c user.name=ci -c user.email=ci@localhost merge --no-ff --no-edit FETCH_HEAD; then echo "::error::The pull request does not merge cleanly into main; rebase it first"; exit 1; fi
-          git submodule update --init --recursive
-      - id: toolchain
-        uses: actions/cache@v6
+          submodules: recursive
+
+      - name: Checkout exact selected base 9aa
+        uses: actions/checkout@v7
         with:
-          path: C:\winlibs
-          key: ${{ env.WINLIBS_ZIP }}
-      - if: steps.toolchain.outputs.cache-hit != 'true'
+          repository: ${{ github.repository }}
+          ref: ${{ needs.eligibility.outputs.base }}
+          path: source/base
+          fetch-depth: 0
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Checkout exact candidate head
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ needs.eligibility.outputs.candidate }}
+          path: source/head
+          fetch-depth: 0
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Prepare durable evidence location
         run: |
-          curl -sSfL -o "$RUNNER_TEMP/winlibs.zip" "https://github.com/brechtsanders/winlibs_mingw/releases/download/$WINLIBS_RELEASE/$WINLIBS_ZIP"
-          7z x "$RUNNER_TEMP/winlibs.zip" -oC:/winlibs > /dev/null
-      - run: echo 'C:\winlibs\mingw64\bin' >> "$GITHUB_PATH"
+          set -euo pipefail
+          mkdir -p evidence/base evidence/head evidence/identity
+          driver_head="$(git -C driver rev-parse HEAD)"
+          test "$driver_head" = "$GITHUB_SHA"
+          printf 'run=%s\nattempt=%s\nworkflowEvent=%s\ndriverHead=%s\nbase=%s\ncandidate=%s\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$GITHUB_EVENT_NAME" "$driver_head" \
+            '${{ needs.eligibility.outputs.base }}' '${{ needs.eligibility.outputs.candidate }}' > evidence/identity/run.txt
+          sha256sum driver/.github/workflows/build.yml > evidence/identity/driver-workflow.sha256
+          test "$(git -C source/base rev-parse HEAD)" = '${{ needs.eligibility.outputs.base }}'
+          test "$(git -C source/head rev-parse HEAD)" = '${{ needs.eligibility.outputs.candidate }}'
+          test -z "$(git -C source/base status --porcelain)"
+          test -z "$(git -C source/head status --porcelain)"
+
       - uses: hendrikmuhs/ccache-action@v1.2.24
         with:
-          key: windows
-          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          key: host-forced-personality-9aa
+          save: false
           evict-old-files: job
-      - shell: cmd
-        run: cmake -S . -B build %CONFIGURE%
-      - name: Check that every test executable is registered with ctest
-        shell: cmd
-        run: python tools/check_test_registration.py build
-      - shell: cmd
-        run: cmake --build build
-      - shell: cmd
-        run: cmake --build build --target libs
-      - shell: cmd
-        run: ctest --test-dir build --output-on-failure --timeout 120 --parallel 4 --output-log ctest.log --output-junit ctest.xml
-      - run: python tools/check_skips.py build/ctest.xml --job windows
-      - name: Report tests slower than 30 s
-        if: ${{ !cancelled() }}
-        shell: bash
+
+      - name: Install Linux build dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers libpipewire-0.3-dev libpulse-dev libasound2-dev
+
+      - name: Record exact candidate checkout
+        working-directory: source/head
+        run: git log -1 --format=%H
+
+      - name: Apply identical test-only overlay to base
+        env:
+          BASE_SHA: ${{ needs.eligibility.outputs.base }}
+          CANDIDATE_SHA: ${{ needs.eligibility.outputs.candidate }}
         run: |
-          [ -f ctest.log ] || exit 0
-          awk '/Test +#[0-9]+: / && $NF == "sec" { for (i = 1; i <= NF; i++) if ($i ~ /^#[0-9]+:$/) name = $(i + 1); t = $(NF - 1) + 0; if (t > max[name]) max[name] = t }
-            END { for (name in max) if (max[name] > 30) printf "::warning title=Slow test::%s took %.1f s on %s; tests must finish in 30 s (CONTRIBUTING.md)\n", name, max[name], ENVIRON["RUNNER_OS"] }' ctest.log
+          set -euo pipefail
+          test ! -e source/base/core/libs/tests/GuestHostCancellation.cpp
+          cp source/head/core/libs/tests/GuestHostCancellation.cpp source/base/core/libs/tests/GuestHostCancellation.cpp
+          git -C source/head diff --no-ext-diff "$BASE_SHA" "$CANDIDATE_SHA" -- core/libs/prx/libkernel/CMakeLists.txt > evidence/base/libkernel-test-registration.patch
+          test -s evidence/base/libkernel-test-registration.patch
+          git -C source/base apply --check "$GITHUB_WORKSPACE/evidence/base/libkernel-test-registration.patch"
+          git -C source/base apply "$GITHUB_WORKSPACE/evidence/base/libkernel-test-registration.patch"
+          test "$(sha256sum source/base/core/libs/tests/GuestHostCancellation.cpp | cut -d' ' -f1)" = "$(sha256sum source/head/core/libs/tests/GuestHostCancellation.cpp | cut -d' ' -f1)"
+          test "$(git -C source/base status --porcelain | wc -l)" -eq 2
+          sha256sum source/base/core/libs/tests/GuestHostCancellation.cpp source/head/core/libs/tests/GuestHostCancellation.cpp source/base/core/libs/prx/libkernel/CMakeLists.txt source/head/core/libs/prx/libkernel/CMakeLists.txt evidence/base/libkernel-test-registration.patch > evidence/base/overlay.sha256
+          git -C source/base status --short > evidence/base/overlay-status.txt
+
+      - name: Configure exact base focused regression
+        working-directory: source/base
+        run: |
+          set -euo pipefail
+          cmake -S . -B build $CONFIGURE > ../../evidence/base/configure.log 2>&1
+
+      - name: Build four essential regression targets on base
+        working-directory: source/base
+        run: |
+          set -euo pipefail
+          cmake --build build --target guest_host_cancellation_tests exception_runtime_tests exception_personality_tests exception_c_cleanup_tests --parallel 2 > ../../evidence/base/build.log 2>&1
+
+      - name: Run four essential regression cases on base and require intended cancellation failure
+        working-directory: source/base
+        run: |
+          set -euo pipefail
+          set +e
+          ctest --test-dir build --output-on-failure --timeout 120 -R '^(guest_host_cancellation|exception_runtime|exception_personality|exception_c_cleanup)$' --output-log "$GITHUB_WORKSPACE/evidence/base/ctest.log" --output-junit "$GITHUB_WORKSPACE/evidence/base/ctest.xml" > "$GITHUB_WORKSPACE/evidence/base/console.log" 2>&1
+          result=$?
+          set -e
+          printf '%s\n' "$result" > "$GITHUB_WORKSPACE/evidence/base/ctest.exitcode"
+          test "$result" -ne 0
+          grep -q 'guest_host_cancellation' "$GITHUB_WORKSPACE/evidence/base/ctest.log"
+          grep -Eq 'SegFault|SIGSEGV' "$GITHUB_WORKSPACE/evidence/base/ctest.log"
+          python3 - "$GITHUB_WORKSPACE/evidence/base/ctest.xml" <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          root = ET.parse(sys.argv[1]).getroot()
+          cases = [node for node in root.iter('testcase')]
+          expected = {'guest_host_cancellation', 'exception_runtime', 'exception_personality', 'exception_c_cleanup'}
+          names = [case.get('name') for case in cases]
+          if set(names) != expected or len(names) != len(expected):
+              raise SystemExit(f'base focused result set mismatch: {names!r}')
+          by_name = {case.get('name'): case for case in cases}
+          for name in expected - {'guest_host_cancellation'}:
+              if any(child.tag.rsplit('}', 1)[-1] in {'failure', 'error', 'skipped'} for child in by_name[name]):
+                  raise SystemExit(f'base control case did not pass: {name}')
+          failing = by_name['guest_host_cancellation']
+          if not any(child.tag.rsplit('}', 1)[-1] in {'failure', 'error'} for child in failing):
+              raise SystemExit('base cancellation case lacks a failure record')
+          if any(child.tag.rsplit('}', 1)[-1] == 'skipped' for case in cases for child in case):
+              raise SystemExit('base focused matrix contains a skipped case')
+          PY
+
+      - name: Run cmake -S . -B build $CONFIGURE -DANYPS5_ENABLE_SPIRV_TOOLS=ON
+        working-directory: source/head
+        run: cmake -S . -B build $CONFIGURE -DANYPS5_ENABLE_SPIRV_TOOLS=ON
+
+      - name: Build four essential regression targets on candidate
+        working-directory: source/head
+        run: |
+          set -euo pipefail
+          cmake --build build --target guest_host_cancellation_tests exception_runtime_tests exception_personality_tests exception_c_cleanup_tests --parallel 2 > "$GITHUB_WORKSPACE/evidence/head/focused-build.log" 2>&1
+
+      - name: Run four essential regression cases on candidate
+        working-directory: source/head
+        run: |
+          set -euo pipefail
+          ctest --test-dir build --output-on-failure --timeout 120 -R '^(guest_host_cancellation|exception_runtime|exception_personality|exception_c_cleanup)$' --output-log "$GITHUB_WORKSPACE/evidence/head/ctest.log" --output-junit "$GITHUB_WORKSPACE/evidence/head/ctest.xml" > "$GITHUB_WORKSPACE/evidence/head/console.log" 2>&1
+          python3 - "$GITHUB_WORKSPACE/evidence/head/ctest.xml" <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          root = ET.parse(sys.argv[1]).getroot()
+          cases = [node for node in root.iter('testcase')]
+          expected = {'guest_host_cancellation', 'exception_runtime', 'exception_personality', 'exception_c_cleanup'}
+          names = [case.get('name') for case in cases]
+          if set(names) != expected or len(names) != len(expected):
+              raise SystemExit(f'candidate focused result set mismatch: {names!r}')
+          for case in cases:
+              if any(child.tag.rsplit('}', 1)[-1] in {'failure', 'error', 'skipped'} for child in case):
+                  raise SystemExit(f'candidate focused case did not pass: {case.get("name")}')
+          PY
+
+      - name: Check that every test executable is registered with ctest
+        working-directory: source/head
+        run: python3 tools/check_test_registration.py build
+
+      - name: Run cmake --build build
+        working-directory: source/head
+        run: cmake --build build --parallel 2
+
+      - name: Run cmake --build build --target libs
+        working-directory: source/head
+        run: cmake --build build --target libs --parallel 2
+
+      - name: Run ctest --test-dir build --output-on-failure --timeout 120 --parallel 4 --output-log ctest.log
+        working-directory: source/head
+        env:
+          ANYPS5_REQUIRE_VULKAN: 1
+          GALLIUM_OVERRIDE_CPU_CAPS: avx
+        run: ctest --test-dir build --output-on-failure --timeout 120 --parallel 4 --repeat until-fail:3 --output-log ctest.log --output-junit ctest.xml
+
+      - name: Check Linux CTest skips
+        if: ${{ !cancelled() }}
+        working-directory: source/head
+        run: python3 tools/check_skips.py build/ctest.xml
+
+      - name: Verify essential Linux regressions passed three times
+        if: ${{ !cancelled() }}
+        working-directory: source/head
+        run: |
+          python3 - <<'PY'
+          import pathlib, re, xml.etree.ElementTree as ET
+          essential = {'guest_host_cancellation', 'exception_runtime', 'exception_personality', 'exception_c_cleanup'}
+          root = ET.parse('build/ctest.xml').getroot()
+          cases = [case for case in root.iter('testcase')]
+          by_name = {case.get('name'): case for case in cases}
+          if not essential.issubset(by_name):
+              raise SystemExit(f'missing essential Linux cases: {sorted(essential - set(by_name))}')
+          for name in essential:
+              case = by_name[name]
+              if any(child.tag.rsplit('}', 1)[-1] in {'failure', 'error', 'skipped'} for child in case):
+                  raise SystemExit(f'essential Linux case not passed: {name}')
+          log = pathlib.Path('build/ctest.log').read_text(errors='replace')
+          for name in essential:
+              runs = re.findall(rf'^\d+/3 Test\s+#\d+: {re.escape(name)}\s+\.\.\.\s+Passed\b', log, re.MULTILINE)
+              if len(runs) != 3:
+                  raise SystemExit(f'{name} passed {len(runs)} times, expected three')
+          PY
+
+      - name: Upload focused and full Linux evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: host-forced-personality-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            evidence/**
+            source/base/build/Testing/Temporary/LastTest.log
+            source/head/build/Testing/Temporary/LastTest.log
+            source/head/build/ctest.log
+            source/head/build/ctest.xml
+          if-no-files-found: error
+          retention-days: 7
