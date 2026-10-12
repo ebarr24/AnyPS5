@@ -18,7 +18,7 @@ concurrency:
 env:
   BASE_SHA: 9aa5fd290007d816bfed6970ee259f9baaa0e24e
   LEGACY_SHA: b758d156dd850da84e166b14f282cbba393d331c
-  CANDIDATE_SHA: cf0dc99e8fc547aa0e76a5e4e71ccf350801b072
+  CANDIDATE_SHA: a37d76e337e20471959a8182c92e69120fdf1ea3
   CONFIGURE: >-
     -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
     -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
@@ -63,7 +63,7 @@ jobs:
             const pins = {
               base: '9aa5fd290007d816bfed6970ee259f9baaa0e24e',
               legacy: 'b758d156dd850da84e166b14f282cbba393d331c',
-              candidate: 'cf0dc99e8fc547aa0e76a5e4e71ccf350801b072',
+              candidate: 'a37d76e337e20471959a8182c92e69120fdf1ea3',
             };
             for (const [name, sha] of Object.entries(pins)) {
               const { data } = await github.rest.repos.getCommit({ owner, repo, ref: sha });
@@ -290,7 +290,7 @@ jobs:
             exit 1
           fi
           grep -q 'resolver contention: contenderObserved=1 returnedBeforeOwnerRelease=1 winnerHeld=1 localPairValid=1 localPair=1' "$GITHUB_WORKSPACE/evidence/head/LastTest.log"
-          grep -q 'concurrent cancellation: simultaneous event-flag waiters=2' "$GITHUB_WORKSPACE/evidence/head/LastTest.log"
+          grep -q 'concurrent cancellation: owner and contender EventFlags are parked' "$GITHUB_WORKSPACE/evidence/head/LastTest.log"
           grep -q 'concurrent cancellation: gateHeld=1 contenderBeforeOwnerRelease=1 winnerStillHeld=1 contenderCanceled=1 ownerJoined=1 ownerCanceled=1' "$GITHUB_WORKSPACE/evidence/head/LastTest.log"
           python3 - "$GITHUB_WORKSPACE/evidence/head/ctest.xml" "$GITHUB_WORKSPACE/evidence/head/LastTest.log" <<'PY'
           import re, sys, xml.etree.ElementTree as ET
