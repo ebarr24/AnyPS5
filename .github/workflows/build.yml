@@ -1,4 +1,4 @@
-name: Private POSIX cancellation baseline debugger probe
+name: Private bounded POSIX cancellation fault discriminator
 
 on:
   workflow_dispatch:
@@ -33,7 +33,7 @@ jobs:
               throw new Error('The required historical 3391 workflow input is schema-only and must not select a PR');
             }
             const { owner, repo } = context.repo;
-            if (owner !== 'ebarr24' || repo !== 'AnyPS5' || context.ref !== 'refs/heads/phase-observer-cancel-debug-r6') {
+            if (owner !== 'ebarr24' || repo !== 'AnyPS5' || context.ref !== 'refs/heads/phase-observer-cancel-unwind-r7') {
               throw new Error('Dispatch is restricted to the isolated ebarr24/AnyPS5 diagnostic branch');
             }
             const { data: repository } = await github.rest.repos.get({ owner, repo });
@@ -88,21 +88,11 @@ jobs:
           persist-credentials: false
           submodules: recursive
 
-      - name: Checkout exact candidate 2e59
-        uses: actions/checkout@v7
-        with:
-          repository: ${{ github.repository }}
-          ref: ${{ needs.eligibility.outputs.candidate }}
-          path: source/candidate2e59
-          fetch-depth: 0
-          persist-credentials: false
-          submodules: recursive
-
       - name: Initialize raw evidence directories
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p evidence/base414 evidence/candidate2e59 evidence/gdb evidence/cells/base414-trace-off evidence/cells/candidate2e59-trace-off
+          mkdir -p evidence/base414 evidence/gdb evidence/cells/base414-trace-off
           driver_head="$(git -C driver rev-parse HEAD)"
           test "$driver_head" = "$GITHUB_SHA"
           printf '%s\n' \
@@ -122,7 +112,7 @@ jobs:
 
       - uses: hendrikmuhs/ccache-action@v1.2.24
         with:
-          key: private-cancel-debug-r6
+          key: private-cancel-unwind-r7
           save: false
           evict-old-files: job
 
@@ -137,46 +127,37 @@ jobs:
           gdb --version | tee evidence/gdb/gdb-version.txt
           dpkg-query -W -f='${Version}\n' gdb | tee evidence/gdb/gdb-package-version.txt
 
-      - name: Verify exact source commits and apply the same fixture-only overlay
+      - name: Verify exact base 414 and apply fixture-only overlay
         shell: bash
         env:
           BASE_SHA: ${{ needs.eligibility.outputs.base }}
-          CANDIDATE_SHA: ${{ needs.eligibility.outputs.candidate }}
         run: |
           set -euo pipefail
           fixture="$GITHUB_WORKSPACE/driver/.github/diagnostics/cancel-probe/GuestEventFlag.cpp"
           patch_cmake="$GITHUB_WORKSPACE/driver/.github/diagnostics/cancel-probe/CMakeLists.cancel-probe.patch"
           echo '61d3a2dcb6616a130578f44066517b09814cd945d87fc571abb16197ee037ad4  '"$fixture" | sha256sum --check
           echo '3d75c6c3f94480b08c1dcab547da5a84f797154c588077fb8672bcd8ad145331  '"$patch_cmake" | sha256sum --check
-          for spec in "base414:$BASE_SHA" "candidate2e59:$CANDIDATE_SHA"; do
-            IFS=: read -r name revision <<< "$spec"
-            root="$GITHUB_WORKSPACE/source/$name"
-            test "$(git -C "$root" rev-parse HEAD)" = "$revision"
-            test -z "$(git -C "$root" status --porcelain)"
-            if [ "$name" = base414 ]; then
-              test "$(git -C "$root" rev-parse HEAD:core/libs/prx/libkernel/CMakeLists.txt)" = 58c5364b04ab1b7a1234a699dc8c1875ac9f8564
-              if git -C "$root" cat-file -e HEAD:core/libs/tests/GuestEventFlag.cpp 2>/dev/null; then
-                echo 'Unexpected tracked GuestEventFlag.cpp in clean base 414 tree' >&2
-                exit 1
-              fi
-              test ! -e "$root/core/libs/tests/GuestEventFlag.cpp"
-            else
-              test "$(sha256sum "$root/core/libs/tests/GuestEventFlag.cpp" | cut -d' ' -f1)" = 6ae132600c19650db12b53c1356bc1355790a646fbc59a846ef63be5beb5e20b
-              test "$(sha256sum "$root/core/libs/prx/libkernel/CMakeLists.txt" | cut -d' ' -f1)" = dbcb020eb63fbd4bedbc5a6f9aee2db245b84d4a2d55369fdc9f16d5be5c066a
-            fi
-            git -C "$root" apply --check "$patch_cmake"
-            git -C "$root" apply "$patch_cmake"
-            cp -- "$fixture" "$root/core/libs/tests/GuestEventFlag.cpp"
-            test "$(sha256sum "$root/core/libs/tests/GuestEventFlag.cpp" | cut -d' ' -f1)" = 61d3a2dcb6616a130578f44066517b09814cd945d87fc571abb16197ee037ad4
-            changed="$(git -C "$root" status --porcelain | sed 's/^...//' | sort)"
-            expected=$'core/libs/prx/libkernel/CMakeLists.txt\ncore/libs/tests/GuestEventFlag.cpp'
-            test "$changed" = "$expected"
-            git -C "$root" diff --check
-            printf '%s\n' "$name revision=$revision" > "$GITHUB_WORKSPACE/evidence/$name/source.txt"
-            sha256sum "$root/core/libs/tests/GuestEventFlag.cpp" "$root/core/libs/prx/libkernel/CMakeLists.txt" > "$GITHUB_WORKSPACE/evidence/$name/fixture-files.sha256"
-            git -C "$root" rev-parse HEAD^{tree} > "$GITHUB_WORKSPACE/evidence/$name/git-tree-sha.txt"
-          done
-          cmp source/base414/core/libs/tests/GuestEventFlag.cpp source/candidate2e59/core/libs/tests/GuestEventFlag.cpp
+          root="$GITHUB_WORKSPACE/source/base414"
+          test "$(git -C "$root" rev-parse HEAD)" = "$BASE_SHA"
+          test "$BASE_SHA" = 414937718cf0cc1edb2837453adf27b237be5416
+          test -z "$(git -C "$root" status --porcelain)"
+          test "$(git -C "$root" rev-parse HEAD:core/libs/prx/libkernel/CMakeLists.txt)" = 58c5364b04ab1b7a1234a699dc8c1875ac9f8564
+          if git -C "$root" cat-file -e HEAD:core/libs/tests/GuestEventFlag.cpp 2>/dev/null; then
+            echo 'Unexpected tracked GuestEventFlag.cpp in clean base 414 tree' >&2
+            exit 1
+          fi
+          test ! -e "$root/core/libs/tests/GuestEventFlag.cpp"
+          git -C "$root" apply --check "$patch_cmake"
+          git -C "$root" apply "$patch_cmake"
+          cp -- "$fixture" "$root/core/libs/tests/GuestEventFlag.cpp"
+          test "$(sha256sum "$root/core/libs/tests/GuestEventFlag.cpp" | cut -d' ' -f1)" = 61d3a2dcb6616a130578f44066517b09814cd945d87fc571abb16197ee037ad4
+          changed="$(git -C "$root" status --porcelain | sed 's/^...//' | sort)"
+          expected=$'core/libs/prx/libkernel/CMakeLists.txt\ncore/libs/tests/GuestEventFlag.cpp'
+          test "$changed" = "$expected"
+          git -C "$root" diff --check
+          printf '%s\n' "base414 revision=$BASE_SHA" > "$GITHUB_WORKSPACE/evidence/base414/source.txt"
+          sha256sum "$root/core/libs/tests/GuestEventFlag.cpp" "$root/core/libs/prx/libkernel/CMakeLists.txt" > "$GITHUB_WORKSPACE/evidence/base414/fixture-files.sha256"
+          git -C "$root" rev-parse HEAD^{tree} > "$GITHUB_WORKSPACE/evidence/base414/git-tree-sha.txt"
 
       - name: Record runner and compiler versions
         shell: bash
@@ -200,16 +181,7 @@ jobs:
           cmake --build build --parallel 2 --target guest_event_flag_cancel_probe_tests 2>&1 | tee "$GITHUB_WORKSPACE/evidence/base414/build.log"
           grep -E '^CMAKE_(BUILD_TYPE|C_FLAGS_RELEASE|CXX_FLAGS_RELEASE):' build/CMakeCache.txt > "$GITHUB_WORKSPACE/evidence/base414/cache-flags.txt"
 
-      - name: Configure and build candidate 2e59 target only
-        shell: bash
-        working-directory: source/candidate2e59
-        run: |
-          set -euo pipefail
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DANYPS5_ENABLE_SPIRV_TOOLS=ON -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache '-DCMAKE_C_FLAGS_RELEASE=-O3 -DNDEBUG -g' '-DCMAKE_CXX_FLAGS_RELEASE=-O3 -DNDEBUG -g' 2>&1 | tee "$GITHUB_WORKSPACE/evidence/candidate2e59/configure.log"
-          cmake --build build --parallel 2 --target guest_event_flag_cancel_probe_tests 2>&1 | tee "$GITHUB_WORKSPACE/evidence/candidate2e59/build.log"
-          grep -E '^CMAKE_(BUILD_TYPE|C_FLAGS_RELEASE|CXX_FLAGS_RELEASE):' build/CMakeCache.txt > "$GITHUB_WORKSPACE/evidence/candidate2e59/cache-flags.txt"
-
-      - name: Reproduce baseline and bounded candidate-off comparison once
+      - name: Reproduce the base 414 trace-off cancellation fault once
         shell: bash
         run: |
           set -u
@@ -221,7 +193,6 @@ jobs:
             revision="$(git -C "$GITHUB_WORKSPACE/source/$root" rev-parse HEAD)"
             tree_sha="$(git -C "$GITHUB_WORKSPACE/source/$root" rev-parse 'HEAD^{tree}')"
             recorded_clean_windows_fingerprint=not-provided
-            if [ "$root" = candidate2e59 ]; then recorded_clean_windows_fingerprint=173ec13f53154d3bec23bee5f1843db7e9b18006dcd90830262e0b8943e3bfeb; fi
             set +e
             ctest --test-dir "$GITHUB_WORKSPACE/source/$root/build" --output-on-failure --verbose --timeout 20 --parallel 1 -R "^${case_name}$" --output-log "$out/ctest.log" --output-junit "$out/ctest.xml" > "$out/console.log" 2>&1
             local status=$?
@@ -246,7 +217,7 @@ jobs:
             printf '%s\n' "$signal_name" > "$out/signal-name.txt"
             printf '%s\n' "$result_line" > "$out/result-line.txt"
             printf 'cell=%s\nsource=%s\nsourceSha=%s\ngitTreeSha=%s\nrecordedCleanWindowsSourceFingerprint=%s\ncase=%s\nctestExitCode=%s\ntimeoutSeconds=20\nrepeat=none\nparallel=1\n' "$id" "$root" "$revision" "$tree_sha" "$recorded_clean_windows_fingerprint" "$case_name" "$status" > "$out/cell.txt"
-            printf 'fingerprintScope=recorded clean Windows candidate source context; not computed for the Linux diagnostic overlay tree\n' >> "$out/cell.txt"
+            printf 'fingerprintScope=Linux diagnostic source is bound by exact base commit, clean pre-overlay tree, and two overlay file hashes; no clean-source fingerprint is claimed\n' >> "$out/cell.txt"
             printf 'outcome=%s\nresultLine=%s\n' "$outcome" "$result_line" >> "$out/cell.txt"
             printf 'signalName=%s\n' "$signal_name" >> "$out/cell.txt"
             cp "$GITHUB_WORKSPACE/evidence/toolchain.txt" "$out/toolchain.txt"
@@ -261,9 +232,9 @@ jobs:
             return 0
           }
           run_cell base414-trace-off base414 guest_event_flag_posix_cancel_probe_off
-          run_cell candidate2e59-trace-off candidate2e59 guest_event_flag_posix_cancel_probe_off
 
-      - name: Enforce exact two-cell accounting and retain failure status
+
+      - name: Enforce exact one-cell SIGSEGV accounting and retain diagnostic status
         if: ${{ always() }}
         shell: bash
         run: |
@@ -272,7 +243,6 @@ jobs:
           root = pathlib.Path('evidence/cells')
           expected = {
               'base414-trace-off': 'guest_event_flag_posix_cancel_probe_off',
-              'candidate2e59-trace-off': 'guest_event_flag_posix_cancel_probe_off',
           }
           problems = []
           actual = sorted(p.name for p in root.iterdir() if p.is_dir()) if root.exists() else []
@@ -284,22 +254,24 @@ jobs:
               try:
                   status_text = (out / 'ctest.exitcode').read_text().strip()
                   record['ctestExitCode'] = int(status_text)
-                  if record['ctestExitCode'] != 0: problems.append(f'{cell}: CTest exit {status_text}')
+                  if record['ctestExitCode'] != 8: problems.append(f'{cell}: expected reproduced CTest exit 8, found {status_text}')
                   outcome = (out / 'outcome.txt').read_text().strip()
                   result_line = (out / 'result-line.txt').read_text().strip()
                   signal_name = (out / 'signal-name.txt').read_text().strip()
                   record['outcome'] = outcome
                   record['resultLine'] = result_line
                   record['signalName'] = signal_name
-                  if outcome != 'passed': problems.append(f'{cell}: outcome {outcome!r}')
+                  if outcome != 'signal' or signal_name != 'SIGSEGV' or 'SegFault' not in result_line:
+                      problems.append(f'{cell}: expected exact SIGSEGV reproduction, got outcome={outcome!r}, signal={signal_name!r}, result={result_line!r}')
                   xml_path = out / 'ctest.xml'
                   tree = ET.parse(xml_path)
                   cases = tree.findall('.//testcase')
                   names = [case.attrib.get('name') for case in cases]
                   if names != [test_name]: problems.append(f'{cell}: testcases {names!r}')
                   for case in cases:
-                      if any(child.tag in ('failure', 'error', 'skipped') for child in case):
-                          problems.append(f'{cell}: failed or skipped testcase')
+                      children = [child.tag.rsplit('}', 1)[-1] for child in case]
+                      if not any(tag in ('failure', 'error') for tag in children) or 'skipped' in children:
+                          problems.append(f'{cell}: expected a failed, non-skipped SIGSEGV testcase')
                   stderr = out / 'named.stderr'
                   if not stderr.is_file() or stderr.is_symlink(): problems.append(f'{cell}: named stderr is missing or non-regular')
                   record['stderrBytes'] = stderr.stat().st_size if stderr.is_file() else None
@@ -308,12 +280,17 @@ jobs:
                   problems.append(f'{cell}: evidence incomplete: {exc}')
               summary['results'].append(record)
           summary['problems'] = problems
+          reproduced = not problems
+          summary['expectedFaultReproduced'] = reproduced
+          summary['diagnosticConclusion'] = ('failed: exact baseline SIGSEGV reproduced; diagnostic evidence is not a test pass or gate credit'
+                                             if reproduced else 'failed: exact natural evidence incomplete or inconsistent')
           pathlib.Path('evidence/matrix-summary.json').write_text(json.dumps(summary, indent=2) + '\n')
           print(json.dumps(summary, indent=2))
-          sys.exit(1 if problems else 0)
+          if problems: raise SystemExit('natural evidence incomplete or inconsistent; GDB selector will fail closed')
+          raise SystemExit('expected baseline SIGSEGV reproduced; keep diagnostic job failed while bounded GDB step runs under always()')
           PY
 
-      - name: Required bounded symbolized baseline reproduction
+      - name: Required bounded targeted baseline discriminator
         if: ${{ always() }}
         shell: bash
         run: |
@@ -322,7 +299,6 @@ jobs:
           import json, pathlib, subprocess, xml.etree.ElementTree as ET
           cells = [
               ('base414-trace-off', 'base414', 'guest_event_flag_posix_cancel_probe_off'),
-              ('candidate2e59-trace-off', 'candidate2e59', 'guest_event_flag_posix_cancel_probe_off'),
           ]
           expected_ids = {cell for cell, _, _ in cells}
           cells_root = pathlib.Path('evidence/cells')
@@ -410,10 +386,6 @@ jobs:
               reason = f'baseline SIGSEGV was not reproduced exactly (exit={code.read_text().strip()}, outcome={outcome}, signal={signal_name})'
               pathlib.Path('evidence/gdb/precondition-error.txt').write_text(reason + '\n')
               raise SystemExit(reason)
-          logs = [out / 'console.log', out / 'ctest.log', out / 'named.stderr']
-          joined = '\n'.join(p.read_text(errors='replace') for p in logs if p.is_file())
-          if any(line.lstrip().startswith(('#0 ', '#1 ', '#2 ', 'Backtrace:')) for line in joined.splitlines()):
-              print(json.dumps({'notNeeded': f'{cell} already contains stack-like output'})); raise SystemExit(0)
           ctest = subprocess.run(['ctest', '--test-dir', f'source/{source}/build', '--show-only=json-v1', '-R', '^' + test + '$'],
                                  text=True, capture_output=True, check=True)
           matches = [entry for entry in json.loads(ctest.stdout)['tests'] if entry.get('name') == test]
@@ -464,8 +436,6 @@ jobs:
           python3 - <<'PY'
           import hashlib, json, os, pathlib, re, shutil, subprocess, sys
           target = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'] + '/gdb-target.json').read_text())
-          if 'notNeeded' in target:
-              pathlib.Path('evidence/gdb/not-needed.txt').write_text(target['notNeeded'] + '\n'); print(target['notNeeded']); sys.exit(0)
           if 'skip' in target:
               raise RuntimeError('Required GDB target precondition failed: ' + target['skip'])
           if not shutil.which('gdb'):
@@ -490,9 +460,14 @@ jobs:
           for assignment in target['environment']:
               key, value = assignment.split('=', 1); env[key] = value
           command = ['gdb', '-batch', '-ex', 'set pagination off', '-ex', 'set debuginfod enabled off', '-ex', 'run',
-                     '-ex', 'info threads', '-ex', 'thread apply all bt full', '-ex', 'info sharedlibrary',
-                     '-ex', 'info proc mappings', '-ex', 'info files', '-ex', 'info symbol $pc',
-                     '-ex', 'info line *$pc', '-ex', 'x/8i $pc', '--args', *args]
+                     '-ex', 'printf \"=== selected SIGSEGV thread frame 0 ===\\n\"', '-ex', 'p $_siginfo',
+                     '-ex', 'p/x $_siginfo._sifields._sigfault.si_addr', '-ex', 'info threads', '-ex', 'info registers',
+                     '-ex', 'x/i $pc', '-ex', 'x/8i $pc-16', '-ex', 'disassemble /r $pc-16,$pc+32',
+                     '-ex', 'frame 0', '-ex', 'info args', '-ex', 'info locals',
+                     '-ex', 'p/x encoding', '-ex', 'p/x text', '-ex', 'p/x function', '-ex', 'p/x data',
+                     '-ex', 'p/x p', '-ex', 'p/x value', '-ex', 'x/gx p', '-ex', 'info symbol $pc',
+                     '-ex', 'info line *$pc', '-ex', 'info sharedlibrary', '-ex', 'info proc mappings',
+                     '-ex', 'info files', '-ex', 'bt 2', '-ex', 'frame 1', '-ex', 'info args', '-ex', 'info locals', '--args', *args]
           wrapped = ['timeout', '--signal=TERM', '--kill-after=5s', '20s', *command]
           (out / 'invocation.json').write_text(json.dumps({
               **context, 'command': wrapped, 'debuggerCommand': command, 'timeoutSeconds': 20,
@@ -544,12 +519,10 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@v7
         with:
-          name: private-cancel-debug-r6-${{ github.run_id }}-${{ github.run_attempt }}
+          name: private-cancel-unwind-r7-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             evidence/**
             source/base414/build/Testing/Temporary/LastTest.log
             source/base414/build/core/libs/prx/libkernel/guest_event_flag_posix_cancel_probe_off.stderr
-            source/candidate2e59/build/Testing/Temporary/LastTest.log
-            source/candidate2e59/build/core/libs/prx/libkernel/guest_event_flag_posix_cancel_probe_off.stderr
           if-no-files-found: error
           retention-days: 7
