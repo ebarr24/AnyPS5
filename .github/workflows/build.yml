@@ -173,8 +173,8 @@ jobs:
           cp source/head/core/libs/tests/GuestHostCancellation.cpp source/legacy/core/libs/tests/GuestHostCancellation.cpp
           cp source/head/core/libs/prx/libc/include/exceptions/Unwind.hpp source/legacy/core/libs/prx/libc/include/exceptions/Unwind.hpp
           cp source/head/core/libs/prx/libkernel/CMakeLists.txt source/legacy/core/libs/prx/libkernel/CMakeLists.txt
-          git -C source/legacy apply --check "$GITHUB_WORKSPACE/driver/.github/host-unwind/legacy-resolver-test-hooks.patch"
-          git -C source/legacy apply "$GITHUB_WORKSPACE/driver/.github/host-unwind/legacy-resolver-test-hooks.patch"
+          git -C source/legacy apply --unidiff-zero --check "$GITHUB_WORKSPACE/driver/.github/host-unwind/legacy-resolver-test-hooks.patch"
+          git -C source/legacy apply --unidiff-zero "$GITHUB_WORKSPACE/driver/.github/host-unwind/legacy-resolver-test-hooks.patch"
           test "$(sha256sum source/base/core/libs/tests/GuestHostCancellation.cpp | cut -d' ' -f1)" = "$(sha256sum source/head/core/libs/tests/GuestHostCancellation.cpp | cut -d' ' -f1)"
           test "$(sha256sum source/legacy/core/libs/tests/GuestHostCancellation.cpp | cut -d' ' -f1)" = "$(sha256sum source/head/core/libs/tests/GuestHostCancellation.cpp | cut -d' ' -f1)"
           test "$(git -C source/base status --porcelain | wc -l)" -eq 3

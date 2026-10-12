@@ -2,26 +2,14 @@ diff --git a/core/libs/prx/libc/src/exception/Unwind.cpp b/core/libs/prx/libc/sr
 index 745266c7d..18118bdc9 100644
 --- a/core/libs/prx/libc/src/exception/Unwind.cpp
 +++ b/core/libs/prx/libc/src/exception/Unwind.cpp
-@@ -45,6 +45,8 @@ thread_local _Unwind_Exception* nativeForcedUnwind {};
- thread_local bool nativeHostUnwindResolving {};
- #if defined(APS5_HOST_UNWIND_TESTING)
- thread_local HostUnwindTraceBuffer_nid_no_patch* hostUnwindTrace {};
+@@ -47,0 +48,2 @@ thread_local HostUnwindTraceBuffer_nid_no_patch* hostUnwindTrace {};
 +constinit std::atomic<unsigned> nativeHostUnwindResolverTestGate {};
 +constinit std::atomic<unsigned> nativeHostUnwindResolverTestContenders {};
- #endif
- 
- bool HasRuntimeName(const char* path, const char* prefix) {
-@@ -70,10 +72,20 @@ bool ResolveNativeHostUnwind() {
-     unsigned expected = 0;
-     if (!state.state.compare_exchange_strong(expected, 1, std::memory_order_acq_rel)) {
-         if (nativeHostUnwindResolving) return false;
+@@ -72,0 +75,3 @@ bool ResolveNativeHostUnwind() {
 +#if defined(APS5_HOST_UNWIND_TESTING)
 +        if (expected == 1) nativeHostUnwindResolverTestContenders.fetch_add(1, std::memory_order_relaxed);
 +#endif
-         while ((status = state.state.load(std::memory_order_acquire)) == 1) {}
-         return status == 2;
-     }
- 
+@@ -76,0 +82,7 @@ bool ResolveNativeHostUnwind() {
 +#if defined(APS5_HOST_UNWIND_TESTING)
 +    unsigned armed = 1;
 +    if (nativeHostUnwindResolverTestGate.compare_exchange_strong(armed, 2, std::memory_order_acq_rel)) {
@@ -29,13 +17,7 @@ index 745266c7d..18118bdc9 100644
 +    }
 +#endif
 +
-     nativeHostUnwindResolving = true;
-     HostUnwindTargetInfo_nid_no_patch targets {};
-     Dl_info self {}, personality {}, resume {};
-@@ -125,6 +137,23 @@ extern "C" void APS5_VABI _SetHostUnwindTraceBuffer_nid_no_patch(HostUnwindTrace
- extern "C" void APS5_VABI _RecordHostUnwindTrace_nid_no_patch(const HostUnwindTraceEvent_nid_no_patch* event) {
-     if (event) RecordHostUnwindTrace(*event);
- }
+@@ -127,0 +140,17 @@ extern "C" void APS5_VABI _RecordHostUnwindTrace_nid_no_patch(const HostUnwindTr
 +
 +extern "C" void APS5_VABI _ArmNativeHostUnwindResolverTestGate_nid_no_patch() {
 +    nativeHostUnwindResolverTestContenders.store(0, std::memory_order_relaxed);
@@ -53,6 +35,3 @@ index 745266c7d..18118bdc9 100644
 +extern "C" unsigned APS5_VABI _NativeHostUnwindResolverTestContenders_nid_no_patch() {
 +    return nativeHostUnwindResolverTestContenders.load(std::memory_order_relaxed);
 +}
- #endif
- 
- extern "C" HostUnwindMarkerResult_nid_no_patch APS5_VABI _MarkNativeForcedUnwind_nid_no_patch(
