@@ -109,7 +109,8 @@ void CheckTrace(Context& context, const HostUnwindTargetInfo_nid_no_patch& targe
     Require(std::strcmp(resumeInfo.dli_fname, targets.resumeOwnerName) == 0);
     Require(personalityInfo.dli_fbase != libcInfo.dli_fbase);
     Require(resumeInfo.dli_fbase != libcInfo.dli_fbase);
-    std::fprintf(stderr, "host unwind runtime owners: personality=%s resume=%s\n", personalityInfo.dli_fname, resumeInfo.dli_fname);
+    std::fprintf(stderr, "host unwind runtime owners: personality=%s base=%p resume=%s base=%p\n",
+        personalityInfo.dli_fname, personalityInfo.dli_fbase, resumeInfo.dli_fname, resumeInfo.dli_fbase);
     const auto isRuntime = [](const char* path, const char* prefix) {
         if (!path) return false;
         const char* name = std::strrchr(path, '/');
