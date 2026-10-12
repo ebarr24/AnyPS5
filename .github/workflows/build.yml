@@ -19,7 +19,7 @@ env:
   BASE_SHA: 9aa5fd290007d816bfed6970ee259f9baaa0e24e
   LEGACY_SHA: b758d156dd850da84e166b14f282cbba393d331c
   PREVIOUS_SHA: 0186b61026aefd76124ef30b9b07de8a43b3bb05
-  CANDIDATE_SHA: ce5c0c571f5c72de6d21269f6e18c683211ed64e
+  CANDIDATE_SHA: b6cd478ffca8a8bf39186a2f48158f69d06a971d
   CONFIGURE: >-
     -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
     -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
@@ -66,7 +66,7 @@ jobs:
               base: '9aa5fd290007d816bfed6970ee259f9baaa0e24e',
               legacy: 'b758d156dd850da84e166b14f282cbba393d331c',
               previous: '0186b61026aefd76124ef30b9b07de8a43b3bb05',
-              candidate: 'ce5c0c571f5c72de6d21269f6e18c683211ed64e',
+              candidate: 'b6cd478ffca8a8bf39186a2f48158f69d06a971d',
             };
             for (const [name, sha] of Object.entries(pins)) {
               const { data } = await github.rest.repos.getCommit({ owner, repo, ref: sha });
