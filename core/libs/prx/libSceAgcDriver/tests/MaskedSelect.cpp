@@ -167,6 +167,12 @@ struct AllocationObservation {
     }
 };
 
+struct SelectObservation {
+    std::uint32_t removedSelects;
+    bool targetSelectRemoved;
+    bool sinkSelectRetained;
+};
+
 bool removed(const IrValue& value) {
     return value.Parent() == nullptr;
 }
@@ -854,7 +860,7 @@ int main() {
         auto& next = b.select(active, b.add(written, 2u), old);
         b.keep(next);
         const auto removedSelects = b.eliminate();
-        return std::pair{removedSelects, removed(written)};
+        return SelectObservation{removedSelects, removed(written), !removed(next)};
     };
 
     passed &= run("whole-quad implication keeps uniform-entry scope and active-subset limits", [&] {
@@ -862,7 +868,9 @@ int main() {
             const auto recognized = wqmOnlyRead(waveSize, false, false);
             const auto outsideUniform = wqmOnlyRead(waveSize, true, false);
             const auto outsideSubset = wqmOnlyRead(waveSize, false, true);
-            if (recognized.first != 1u || !recognized.second || outsideUniform.first != 0u || outsideUniform.second || outsideSubset.first != 0u || outsideSubset.second) return false;
+            if (recognized.removedSelects == 0u || !recognized.targetSelectRemoved || !recognized.sinkSelectRetained ||
+                outsideUniform.removedSelects != 0u || outsideUniform.targetSelectRemoved ||
+                outsideSubset.removedSelects != 0u || outsideSubset.targetSelectRemoved) return false;
         }
         return true;
     });
@@ -879,9 +887,10 @@ int main() {
         auto& old = b.lane();
         auto& written = b.select(quads, b.add(old, 1u), old);
         auto& packed = b.emit(opcode, IrType::U32, {&written, &b.constant(0x3c003c00u)});
-        b.keep(b.select(active, packed, old));
+        auto& sink = b.select(active, packed, old);
+        b.keep(sink);
         const auto removedSelects = b.eliminate();
-        return std::pair{removedSelects, removed(written)};
+        return SelectObservation{removedSelects, removed(written), !removed(sink)};
     };
 
     passed &= run("packed-half lane-local operations preserve same-quad and wider-execution proofs", [&] {
@@ -889,7 +898,8 @@ int main() {
             for (const std::uint32_t waveSize : {32u, 64u}) {
                 const auto recognized = packedHalfRead(waveSize, opcode, false);
                 const auto outsideSubset = packedHalfRead(waveSize, opcode, true);
-                if (recognized.first != 1u || !recognized.second || outsideSubset.first != 0u || outsideSubset.second) return false;
+                if (recognized.removedSelects == 0u || !recognized.targetSelectRemoved || !recognized.sinkSelectRetained ||
+                    outsideSubset.removedSelects != 0u || outsideSubset.targetSelectRemoved) return false;
             }
         }
         return true;
