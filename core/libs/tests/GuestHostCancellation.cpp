@@ -22,6 +22,10 @@ using ResolveTargets = bool (*)(HostUnwindTargetInfo_nid_no_patch*);
 using SetTrace = void (*)(HostUnwindTraceBuffer_nid_no_patch*);
 using MarkForcedUnwind = HostUnwindMarkerResult_nid_no_patch (*)(_Unwind_Exception*, _Unwind_Reason_Code);
 using ConsumeForcedUnwind = bool (*)(_Unwind_Exception*);
+using ArmResolverGate = void (*)();
+using ResolverGateEntered = bool (*)();
+using ReleaseResolverGate = void (*)();
+using ResolverContenders = unsigned (*)();
 
 struct Context {
     KernelEventFlag flag {};
@@ -91,6 +95,79 @@ void CheckMarkerState(MarkForcedUnwind mark, ConsumeForcedUnwind consume) {
     Require(mark(&first, _URC_INSTALL_CONTEXT) == HostUnwindMarkerResult_nid_no_patch::Rejected);
     Require(consume(&first));
     Require(!consume(&first));
+}
+
+bool SameTargets(const HostUnwindTargetInfo_nid_no_patch& left, const HostUnwindTargetInfo_nid_no_patch& right) {
+    return left.personality == right.personality && left.personalityOwner == right.personalityOwner &&
+        left.personalityOwnerName == right.personalityOwnerName && left.resume == right.resume &&
+        left.resumeOwner == right.resumeOwner && left.resumeOwnerName == right.resumeOwnerName;
+}
+
+void CheckResolverContention() {
+    const auto resolve = Resolve<ResolveTargets>("_ResolveNativeHostUnwindTargets_nid_no_patch");
+    const auto arm = Resolve<ArmResolverGate>("_ArmNativeHostUnwindResolverTestGate_nid_no_patch");
+    const auto entered = Resolve<ResolverGateEntered>("_NativeHostUnwindResolverTestGateEntered_nid_no_patch");
+    const auto release = Resolve<ReleaseResolverGate>("_ReleaseNativeHostUnwindResolverTestGate_nid_no_patch");
+    const auto contenders = Resolve<ResolverContenders>("_NativeHostUnwindResolverTestContenders_nid_no_patch");
+    Require(resolve && arm && entered && release && contenders);
+
+    arm();
+    HostUnwindTargetInfo_nid_no_patch ownerTargets {};
+    bool ownerResult = false;
+    std::atomic<bool> ownerDone {};
+    std::thread owner([&] {
+        ownerResult = resolve(&ownerTargets);
+        ownerDone.store(true, std::memory_order_release);
+    });
+
+    const auto gateDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!entered() && std::chrono::steady_clock::now() < gateDeadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    const bool gateHeld = entered();
+
+    const char personalityName[] = "untouched personality";
+    const char resumeName[] = "untouched resume";
+    HostUnwindTargetInfo_nid_no_patch loserTargets {
+        0x101, 0x202, personalityName, 0x303, 0x404, resumeName
+    };
+    const HostUnwindTargetInfo_nid_no_patch untouchedTargets = loserTargets;
+    bool loserResult = true;
+    std::atomic<bool> loserDone {};
+    std::thread loser([&] {
+        loserResult = resolve(&loserTargets);
+        loserDone.store(true, std::memory_order_release);
+    });
+
+    const auto contentionDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while ((!gateHeld || contenders() == 0) && std::chrono::steady_clock::now() < contentionDeadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    const bool enteredContention = gateHeld && contenders() == 1;
+    const auto loserDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (enteredContention && !loserDone.load(std::memory_order_acquire) &&
+        std::chrono::steady_clock::now() < loserDeadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+    const bool loserReturnedBeforeRelease = loserDone.load(std::memory_order_acquire);
+    const bool winnerStillHeld = gateHeld && entered() && !ownerDone.load(std::memory_order_acquire);
+    const bool loserOutputUntouched = SameTargets(loserTargets, untouchedTargets);
+    release();
+    owner.join();
+    loser.join();
+
+    std::fprintf(stderr,
+        "resolver contention: contenderObserved=%d returnedBeforeOwnerRelease=%d winnerHeld=%d outputUntouched=%d loserResult=%d\n",
+        enteredContention, loserReturnedBeforeRelease, winnerStillHeld, loserOutputUntouched, loserResult);
+    Require(gateHeld && enteredContention);
+    Require(loserReturnedBeforeRelease);
+    Require(winnerStillHeld && loserOutputUntouched);
+    Require(!loserResult);
+    Require(ownerResult);
+    Require(ownerTargets.personality && ownerTargets.personalityOwner && ownerTargets.personalityOwnerName);
+    Require(ownerTargets.resume && ownerTargets.resumeOwner && ownerTargets.resumeOwnerName);
+
+    HostUnwindTargetInfo_nid_no_patch cachedTargets {};
+    Require(resolve(&cachedTargets));
+    Require(SameTargets(cachedTargets, ownerTargets));
 }
 
 void CheckTrace(Context& context, const HostUnwindTargetInfo_nid_no_patch& targets, ResolveTargets resolveTargets) {
@@ -169,7 +246,12 @@ void CheckTrace(Context& context, const HostUnwindTargetInfo_nid_no_patch& targe
 }
 }
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc == 2 && std::strcmp(argv[1], "--resolver-contention") == 0) {
+        CheckResolverContention();
+        return 0;
+    }
+
     const auto resolveTargets = Resolve<ResolveTargets>("_ResolveNativeHostUnwindTargets_nid_no_patch");
     const auto setTrace = Resolve<SetTrace>("_SetHostUnwindTraceBuffer_nid_no_patch");
     const auto mark = Resolve<MarkForcedUnwind>("_MarkNativeForcedUnwind_nid_no_patch");

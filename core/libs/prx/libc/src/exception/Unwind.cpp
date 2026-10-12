@@ -45,6 +45,8 @@ thread_local _Unwind_Exception* nativeForcedUnwind {};
 thread_local bool nativeHostUnwindResolving {};
 #if defined(APS5_HOST_UNWIND_TESTING)
 thread_local HostUnwindTraceBuffer_nid_no_patch* hostUnwindTrace {};
+constinit std::atomic<unsigned> nativeHostUnwindResolverTestGate {};
+constinit std::atomic<unsigned> nativeHostUnwindResolverTestContenders {};
 #endif
 
 bool HasRuntimeName(const char* path, const char* prefix) {
@@ -70,9 +72,18 @@ bool ResolveNativeHostUnwind() {
     unsigned expected = 0;
     if (!state.state.compare_exchange_strong(expected, 1, std::memory_order_acq_rel)) {
         if (nativeHostUnwindResolving) return false;
-        while ((status = state.state.load(std::memory_order_acquire)) == 1) {}
-        return status == 2;
+#if defined(APS5_HOST_UNWIND_TESTING)
+        if (expected == 1) nativeHostUnwindResolverTestContenders.fetch_add(1, std::memory_order_relaxed);
+#endif
+        return expected == 2;
     }
+
+#if defined(APS5_HOST_UNWIND_TESTING)
+    unsigned armed = 1;
+    if (nativeHostUnwindResolverTestGate.compare_exchange_strong(armed, 2, std::memory_order_acq_rel)) {
+        while (nativeHostUnwindResolverTestGate.load(std::memory_order_acquire) == 2) {}
+    }
+#endif
 
     nativeHostUnwindResolving = true;
     HostUnwindTargetInfo_nid_no_patch targets {};
@@ -124,6 +135,24 @@ extern "C" void APS5_VABI _SetHostUnwindTraceBuffer_nid_no_patch(HostUnwindTrace
 
 extern "C" void APS5_VABI _RecordHostUnwindTrace_nid_no_patch(const HostUnwindTraceEvent_nid_no_patch* event) {
     if (event) RecordHostUnwindTrace(*event);
+}
+
+extern "C" void APS5_VABI _ArmNativeHostUnwindResolverTestGate_nid_no_patch() {
+    nativeHostUnwindResolverTestContenders.store(0, std::memory_order_relaxed);
+    nativeHostUnwindResolverTestGate.store(1, std::memory_order_release);
+}
+
+extern "C" bool APS5_VABI _NativeHostUnwindResolverTestGateEntered_nid_no_patch() {
+    return nativeHostUnwindResolverTestGate.load(std::memory_order_acquire) == 2;
+}
+
+extern "C" void APS5_VABI _ReleaseNativeHostUnwindResolverTestGate_nid_no_patch() {
+    unsigned entered = 2;
+    nativeHostUnwindResolverTestGate.compare_exchange_strong(entered, 3, std::memory_order_release);
+}
+
+extern "C" unsigned APS5_VABI _NativeHostUnwindResolverTestContenders_nid_no_patch() {
+    return nativeHostUnwindResolverTestContenders.load(std::memory_order_relaxed);
 }
 #endif
 

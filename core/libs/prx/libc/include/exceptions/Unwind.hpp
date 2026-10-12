@@ -153,6 +153,10 @@ extern "C" {
 #if defined(APS5_HOST_UNWIND_TESTING)
     void APS5_VABI _SetHostUnwindTraceBuffer_nid_no_patch(HostUnwindTraceBuffer_nid_no_patch*);
     void APS5_VABI _RecordHostUnwindTrace_nid_no_patch(const HostUnwindTraceEvent_nid_no_patch*);
+    void APS5_VABI _ArmNativeHostUnwindResolverTestGate_nid_no_patch();
+    bool APS5_VABI _NativeHostUnwindResolverTestGateEntered_nid_no_patch();
+    void APS5_VABI _ReleaseNativeHostUnwindResolverTestGate_nid_no_patch();
+    unsigned APS5_VABI _NativeHostUnwindResolverTestContenders_nid_no_patch();
 #endif
     HostUnwindMarkerResult_nid_no_patch APS5_VABI _MarkNativeForcedUnwind_nid_no_patch(_Unwind_Exception*, _Unwind_Reason_Code);
     bool APS5_VABI _ConsumeNativeForcedUnwindMarker_nid_no_patch(_Unwind_Exception*);
